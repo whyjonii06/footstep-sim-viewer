@@ -13,9 +13,9 @@ const HALF = PW / 2;
 const K = {
   controlTau: 1.4,
   decideEvery: 0.7,           // s de possession avant décision
-  shootMaxDist: 30,
-  goalValue: 13,              // attractivité du tir dans l'EV (→ volume de tirs)
-  shootBase: { near: 0.122, mid: 0.055, far: 0.021 }, // <12 / <20 / sinon (conversion)
+  shootMaxDist: 26,
+  goalValue: 20,              // attractivité du tir dans l'EV (→ volume de tirs)
+  shootBase: { near: 0.165, mid: 0.095, far: 0.04 }, // <12 / <20 / sinon (conversion)
   shootTechMod: 0.11,
   shootGkMod: 0.08,
   outcomeSaved: 0.23,         // part après but
@@ -31,7 +31,7 @@ const K = {
   yellowProb: 0.19,          // part des fautes → carton jaune
   redGivenYellow: 0.04,
   penConv: 0.76,             // conversion penalty
-  penFromBoxFoul: 0.09,      // part des fautes dans la surface qui sont sifflées penalty
+  penFromBoxFoul: 0.15,      // part des fautes dans la surface qui sont sifflées penalty
   cornerFromBlock: 0.80,     // tir contré → corner
   cornerFromSave: 0.50,      // arrêt → corner (ballon relâché)
   cornerFromMiss: 0.33,      // tir manqué → corner (dévié)
@@ -75,7 +75,7 @@ const oppGoal = (s) => ({ x: s === 'home' ? PW : 0, y: GOAL_Y });
 const ownGoal = (s) => ({ x: s === 'home' ? 0 : PW, y: GOAL_Y });
 const otherSide = (s) => (s === 'home' ? 'away' : 'home');
 const sideSign = (s) => (s === 'home' ? 1 : -1);
-function capOwnHalf(x, s) { return s === 'home' ? Math.min(x, HALF + 6) : Math.max(x, HALF - 6); }
+function capOwnHalf(x, s) { return s === 'home' ? Math.min(x, HALF + 3) : Math.max(x, HALF - 3); }
 
 const HOME_ANCHORS = [
   ['gk', 0, 6, 34],
@@ -135,6 +135,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   let possessionTime = 0, lastOwnerSide = 'home';
   const center = { x: PW / 2, y: GOAL_Y };
   let phase = 'kickoff', phaseUntil = 1.2, kickoffSide = 'home', celebX = PW / 2, celebY = GOAL_Y;
+  let spTaker = null, spSide = 'home', spType = '', spX = PW / 2, spY = GOAL_Y;   // balle arrêtée
   let ctxAtt = 'home', ctxPresser = null, ctxMark = {}, ctxInterceptor = null, ctxOffside = PW / 2;
   let ctxMent = { home: 0, away: 0 };   // mentalité selon score/temps (-1 défensif … +1 offensif)
   let subsDone = false;
@@ -216,41 +217,38 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     inFlight = false; flightIsShot = false;
     phase = 'celebrate'; phaseUntil = curT + 1.6; kickoffSide = otherSide(side);
   }
-  function setRestart(side, x, y) {
+  // Balle arrêtée : on pose le ballon au point, on désigne le tireur (le plus proche),
+  // et on passe en phase 'setpiece' (le tireur s'y rend, courte pause, puis il joue).
+  function deadBall(side, x, y, type) {
     inFlight = false; flightIsShot = false;
+    spX = x; spY = y; ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0; ball.ownerId = null;
     let taker = null, td = 1e9;
-    for (const p of team(side)) { if (p.role === 'gk') continue; const d = Math.hypot(p.x - x, p.y - y); if (d < td) { td = d; taker = p; } }
-    ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0;
-    ball.ownerId = taker ? taker.id : null; lastOwnerSide = side; possessionTime = 0;
+    for (const p of team(side)) {
+      if (p.role === 'gk' && type !== 'goalkick') continue;
+      const d = Math.hypot(p.x - x, p.y - y); if (d < td) { td = d; taker = p; }
+    }
+    spTaker = taker ? taker.id : null; spSide = side; spType = type;
+    lastOwnerSide = side; possessionTime = 0;
+    phase = 'setpiece'; phaseUntil = curT + 0.8;
   }
-  function awardThrowIn(side, x, y) { st.throwins[side]++; setRestart(side, Math.min(Math.max(x, 1), PW - 1), y < HALF ? 0.5 : PH - 0.5); }
-  function awardGoalKick(side) {
+  function awardThrowIn(side, x, y) { st.throwins[side]++; deadBall(side, Math.min(Math.max(x, 1), PW - 1), y < HALF ? 0.4 : PH - 0.4, 'throwin'); }
+  function awardGoalKick(side) {   // 6 mètres = restart RAPIDE (peu d'enjeu visuel)
     inFlight = false; flightIsShot = false;
-    const gk = team(side).find((p) => p.role === 'gk');
-    const x = side === 'home' ? 12 : PW - 12;
-    setRestart(side, x, GOAL_Y + rng.range(-18, 18));
-    if (gk) { /* dégagement par un défenseur proche, suffisant */ }
+    const x = side === 'home' ? 14 : PW - 14, y = GOAL_Y + rng.range(-12, 12);
+    ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0;
+    let taker = null, td = 1e9;
+    for (const p of team(side)) { if (p.role !== 'def' && p.role !== 'gk') continue; const d = Math.hypot(p.x - x, p.y - y); if (d < td) { td = d; taker = p; } }
+    ball.ownerId = taker ? taker.id : null; lastOwnerSide = side; possessionTime = 0;
   }
   function takePenalty(side) {
     st.pens[side]++; st.shots[side]++; st.sot[side]++;
     if (rng.bool(K.penConv)) scoreGoal(side);
-    else giveBallToMidfield(otherSide(side));   // arrêté / sorti → relance adverse
+    else giveBallToMidfield(otherSide(side));
   }
   function awardCorner(side) {
     st.corners[side]++;
     const g = oppGoal(side);
-    if (rng.bool(K.cornerShotProb)) {
-      // Reprise dans la surface : on amène un attaquant au point de chute → tir au prochain choix.
-      let shooter = null, sd = 1e9;
-      for (const p of team(side)) { if (p.role !== 'att' && p.role !== 'mid') continue; const d = dist(p, g); if (d < sd) { sd = d; shooter = p; } }
-      if (shooter) {
-        shooter.x = g.x - attackDir(side) * 6; shooter.y = GOAL_Y + rng.range(-7, 7);
-        ball.x = shooter.x; ball.y = shooter.y; ball.ownerId = shooter.id;
-        inFlight = false; lastOwnerSide = side; possessionTime = 0.6;   // tirera vite
-      } else giveBallToMidfield(otherSide(side));
-    } else {
-      giveBallToMidfield(otherSide(side));   // corner dégagé
-    }
+    deadBall(side, g.x, rng.bool() ? 1 : PH - 1, 'corner');   // ballon au drapeau de corner
   }
 
   function computeContext() {
@@ -303,7 +301,11 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       return clampPitch(ball.x + ball.vx * 0.25, ball.y + ball.vy * 0.25);
     }
     if (!isAtt) {
-      if (p.id === ctxPresser) return clampPitch(ball.x + jit.x * 0.3, ball.y + jit.y * 0.3);
+      if (p.id === ctxPresser) {
+        // Un défenseur ne presse pas au-delà de son camp (sinon il traverse le terrain).
+        const px = p.role === 'def' ? capOwnHalf(ball.x, p.side) : ball.x;
+        return clampPitch(px + jit.x * 0.3, ball.y + jit.y * 0.3);
+      }
       const fid = ctxMark[p.id];
       if (fid) {
         const foe = byId[fid]; const gs = norm(ownGoal(p.side).x - foe.x, ownGoal(p.side).y - foe.y);
@@ -314,7 +316,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     }
     if (p.role === 'def') {
       const isCB = p.slot === 2 || p.slot === 3;
-      const capX = isCB ? HALF - 2 : HALF + 6;
+      const capX = isCB ? HALF - 3 : HALF + 3;   // centraux jamais au-delà du milieu, latéraux +3 m max
       const cap = (x) => (p.side === 'home' ? Math.min(x, capX) : Math.max(x, PW - capX));
       const lineDrop = 13 - ctxMent[p.side] * 9;   // mentalité : bétonne = recule, pousse = ligne haute
       let x = cap(isAtt ? HALF - 8 : ball.x - dir * lineDrop);
@@ -411,15 +413,15 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     return best ? { mate: best, through: bestThrough } : null;
   }
 
-  function doPass(o, mate, through, safe) {
+  function doPass(o, mate, through, safe, noOff) {
     const lead = through ? { x: attackDir(o.side) * 6, y: 0 } : { x: 0, y: 0 };
     const ft = clampPitch(mate.x + lead.x, mate.y + lead.y);
-    // HORS-JEU : passe vers l'avant à un receveur au-delà de la ligne, dans le camp adverse.
+    // HORS-JEU : passe vers l'avant à un receveur au-delà de la ligne (sauf corner → noOff).
     const odir = attackDir(o.side);
     const inOppHalf = o.side === 'home' ? mate.x > HALF : mate.x < HALF;
     const ahead = (mate.x - ball.x) * odir > 1;
     const beyond = o.side === 'home' ? mate.x > ctxOffside + 0.5 : mate.x < ctxOffside - 0.5;
-    if (inOppHalf && ahead && beyond) {
+    if (!noOff && inOppHalf && ahead && beyond) {
       st.offside[o.side]++;
       giveBallToMidfield(otherSide(o.side));   // coup franc pour l'équipe qui défend
       return;
@@ -531,7 +533,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const ownG = ownGoal(d.side);
       const inBox = Math.abs(c.x - ownG.x) < 16.5 && Math.abs(c.y - GOAL_Y) < 20.16;
       if (inBox && rng.bool(K.penFromBoxFoul)) takePenalty(c.side);
-      else setRestart(c.side, c.x, c.y);   // coup franc
+      else deadBall(c.side, c.x, c.y, 'freekick');   // coup franc joué
     } else {
       // Tacle propre → le défenseur récupère.
       ball.ownerId = d.id; lastOwnerSide = d.side; possessionTime = 0;
@@ -598,10 +600,13 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       }
     }
 
-    if (phase === 'play') { computeContext(); if (tick % 2 === 0) computeControl(); }
+    if (phase === 'play' || phase === 'setpiece') { computeContext(); if (tick % 2 === 0) computeControl(); }
 
     for (const p of all) {
-      const tgt = phase === 'play' ? targetFor(p) : kickoffTarget(p);
+      let tgt;
+      if (phase === 'play') tgt = targetFor(p);
+      else if (phase === 'setpiece') tgt = (p.id === spTaker) ? { x: spX, y: spY } : targetFor(p);
+      else tgt = kickoffTarget(p);
       const des = clampLen(tgt.x - p.x, tgt.y - p.y, effSpeed(p));
       let sx = 0, sy = 0;
       for (const q of team(p.side)) { if (q.id === p.id) continue; const ox = p.x - q.x, oy = p.y - q.y; const d = Math.hypot(ox, oy); if (d < 6 && d > 1e-3) { const n = (6 - d) / d; sx += ox * n; sy += oy * n; } }
@@ -621,6 +626,25 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         ball.ownerId = kicker ? kicker.id : null; if (kicker) { ball.x = kicker.x; ball.y = kicker.y; }
         possessionTime = 0; lastOwnerSide = kickoffSide; phase = 'play';
         if (kicker && receiver) doPass(kicker, receiver, false, true);
+      }
+    } else if (phase === 'setpiece') {
+      ball.x = spX; ball.y = spY; ball.ownerId = null;   // ballon posé, le tireur s'approche
+      const taker = spTaker ? byId[spTaker] : null;
+      const ready = taker && Math.hypot(taker.x - spX, taker.y - spY) < 1.6;
+      if ((t >= phaseUntil && ready) || t >= phaseUntil + 3) {
+        if (taker) {
+          ball.ownerId = taker.id; ball.x = taker.x; ball.y = taker.y;
+          possessionTime = 0; lastOwnerSide = spSide; phase = 'play';
+          if (spType === 'corner') {
+            // Pré-positionne 2 attaquants dans la surface et CENTRE direct vers le 1er
+            // (pas de hors-jeu sur corner) → reprise/tir réaliste, pas un tir du drapeau.
+            const g = oppGoal(spSide);
+            const atts = team(spSide).filter((p) => (p.role === 'att' || p.role === 'mid') && p.id !== taker.id)
+              .sort((a, b) => dist(a, g) - dist(b, g)).slice(0, 2);
+            atts.forEach((p, k) => { p.x = g.x - attackDir(spSide) * 6; p.y = GOAL_Y + (k === 0 ? -5 : 5); });
+            if (atts[0]) doPass(taker, atts[0], false, false, true);   // centre, no offside
+          }
+        } else phase = 'play';
       }
     } else { // play
       const owner = ball.ownerId ? byId[ball.ownerId] : null;
