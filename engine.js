@@ -118,6 +118,11 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   const team = (s) => (s === 'home' ? home : away);
   const opp = (s) => (s === 'home' ? away : home);
 
+  // Identité d'équipe (toute la durée du match) : offensive = ligne haute/pressing/risque,
+  // défensive = bloc bas/contre. S'ajoute à la mentalité dynamique liée au score.
+  const styleOff = (t) => ({ attacking: 0.45, defensive: -0.45 }[t] || 0);
+  const homeStyleOff = styleOff(homeTeam.style), awayStyleOff = styleOff(awayTeam.style);
+
   const dt = 1 / 20;
   const totalTicks = Math.floor(displaySeconds * 20);
   const GX = 12, GY = 8, cellW = PW / GX, cellH = PH / GY;
@@ -589,16 +594,16 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
             .forEach((p) => { p.subProg = prog; });
         }
       }
-      // Mentalité selon le score et le temps.
+      // Mentalité = identité de base (style) + ajustement selon le score/temps.
       for (const side of ['home', 'away']) {
+        let m = side === 'home' ? homeStyleOff : awayStyleOff;     // identité (toute la durée)
         const diff = side === 'home' ? scoreH - scoreA : scoreA - scoreH;
-        let m = 0;
         if (prog >= 0.6) {
-          if (diff >= 2) m = -1;                                  // mène nettement → bétonne
-          else if (diff <= -1) m = Math.min(1, 0.4 + (prog - 0.6) * 1.6); // mené → pousse de + en +
-          else if (diff === 1 && prog > 0.85) m = -0.5;           // mène d'1 en fin → gère
+          if (diff >= 2) m -= 1;                                   // mène nettement → bétonne
+          else if (diff <= -1) m += Math.min(1, 0.4 + (prog - 0.6) * 1.6); // mené → pousse
+          else if (diff === 1 && prog > 0.85) m -= 0.5;            // mène d'1 en fin → gère
         }
-        ctxMent[side] = m;
+        ctxMent[side] = Math.max(-1.2, Math.min(1.2, m));
       }
     }
 
