@@ -16,18 +16,17 @@ const K = {
   shootMaxDist: 30,
   goalValue: 11,              // attractivité du tir dans l'EV (→ volume de tirs)
   shootBase: { near: 0.122, mid: 0.055, far: 0.021 }, // <12 / <20 / sinon (conversion)
-  shootTechMod: 0.07,
-  shootGkMod: 0.05,
+  shootTechMod: 0.11,
+  shootGkMod: 0.08,
   outcomeSaved: 0.23,         // part après but
   outcomeBlocked: 0.16,
   tackleBase: 0.12,
   tackleRange: 1.4,
   foulShare: 0.46,            // part des tacles qui sont des fautes
   passMinProb: 0.22,
-  passTechBase: 0.33,         // base de réussite de passe (avant technique)
+  passTechSlope: 0.85,        // pente technique→réussite passe (centrée sur 55)
   passLaneDiv: 6.2,           // + grand = couloir plus exigeant
-  speedFloor: 4.2,           // effSpeed = floor + speed/100*spread
-  speedSpread: 4.2,
+  speedSlope: 10,             // pente speed→vitesse (centrée sur 55)
   // ── Coups de pied arrêtés ──
   yellowProb: 0.19,          // part des fautes → carton jaune
   redGivenYellow: 0.04,
@@ -102,7 +101,7 @@ function buildSquad(team, side) {
   }
   return out;
 }
-const maxSpeed = (p) => K.speedFloor + p.speed / 100 * K.speedSpread;
+const maxSpeed = (p) => 6.51 + (p.speed - 55) / 100 * K.speedSlope;
 const effSpeed = (p) => maxSpeed(p) * p.speedMul;
 
 // ── Simulation d'un match → renvoie les stats mesurées ───────────────────────
@@ -191,7 +190,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     }
     const lane = Math.min(1, minClear / K.passLaneDiv);
     const distF = Math.max(0.3, 1 - dist(a, b) / 80);
-    const techF = K.passTechBase + tech / 100 * 0.45;
+    const techF = 0.578 + (tech - 55) / 100 * K.passTechSlope;
     return Math.max(0.02, techF * lane * distF);
   }
   function giveBallToMidfield(side) {
@@ -452,8 +451,8 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const gk = team(otherSide(shooter.side)).find((p) => p.role === 'gk');
     const d = dist(shooter, goal);
     const base = d < 12 ? K.shootBase.near : d < 20 ? K.shootBase.mid : K.shootBase.far;
-    const techMod = (shooter.technique - 50) / 100 * K.shootTechMod;
-    const gkMod = ((gk ? gk.technique : 50) - 50) / 100 * K.shootGkMod;
+    const techMod = (shooter.technique - 55) / 100 * K.shootTechMod;
+    const gkMod = ((gk ? gk.technique : 55) - 55) / 100 * K.shootGkMod;
     const pGoal = Math.min(0.45, Math.max(0.02, base + techMod - gkMod));
     const r = rng.next();
     let outcome;
@@ -495,7 +494,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     let bestOpt = 'dribble', bestEV = -1e9, passMate = null, passThrough = false, passSafe = false;
     if (gd < K.shootMaxDist) {
       const base = gd < 12 ? K.shootBase.near : gd < 20 ? K.shootBase.mid : K.shootBase.far;
-      const pg = Math.max(0.02, base + (o.technique - 50) / 100 * K.shootTechMod);
+      const pg = Math.max(0.02, base + (o.technique - 55) / 100 * K.shootTechMod);
       const ev = pg * K.goalValue * (1 - press * 0.3) * (1 + ctxMent[o.side] * 0.5);
       if (ev > bestEV) { bestEV = ev; bestOpt = 'shoot'; }
     }
@@ -524,7 +523,9 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   }
 
   function attemptTackle(d, c) {
-    const pT = Math.min(0.5, K.tackleBase + (d.strength - c.technique) / 200 + 0.1);
+    // Duel : force du défenseur vs (technique+force) du porteur (protection de balle). Centré sur 55.
+    const carrierHold = c.technique * 0.6 + c.strength * 0.4;
+    const pT = Math.min(0.5, K.tackleBase + (d.strength - carrierHold) / 130 + 0.1);
     if (!rng.bool(pT)) return;
     if (rng.bool(K.foulShare)) {
       // FAUTE → l'équipe attaquée (c) obtient le coup franc (PAS le fauteur).
