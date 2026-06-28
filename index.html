@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Footstep FC — Visualiseur de match (local)</title>
+<style>
+  html, body { margin: 0; background: #0B152A; color: #fff; font-family: -apple-system, system-ui, sans-serif; }
+  #top { display: flex; align-items: center; gap: 14px; padding: 8px 14px; }
+  #score { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  #min { color: #9CA3AF; font-size: 14px; }
+  .name { font-weight: 600; font-size: 15px; }
+  button { background: #1F2937; color: #fff; border: 1px solid #374151; border-radius: 8px; padding: 7px 12px; font-size: 14px; cursor: pointer; }
+  button:hover { background: #374151; }
+  #wrap { padding: 0 12px 12px; }
+  canvas { width: 100%; height: auto; display: block; border-radius: 10px; background: #15803d; }
+  #feed { min-height: 26px; padding: 8px 14px; color: #d1d5db; font-size: 15px; }
+  #speed { vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="top">
+  <span class="name" id="hn">Domicile</span>
+  <span id="score">0 – 0</span>
+  <span id="min">0'</span>
+  <span class="name" id="an">Extérieur</span>
+  <span style="flex:1"></span>
+  <button id="pause">Pause</button>
+  <button id="regen">↻ Nouveau match</button>
+  <label style="font-size:13px;color:#9CA3AF">vitesse <input id="speed" type="range" min="0.5" max="4" step="0.5" value="1.5"></label>
+</div>
+<div id="wrap"><canvas id="cv" width="1050" height="680"></canvas></div>
+<div id="feed"></div>
+
+<script src="engine.js"></script>
+<script>
+const PW = 105, PH = 68;
+const JERSEY = [1,2,5,4,3,6,8,7,11,9,10];
+const HOME_COLOR = '#22C55E', AWAY_COLOR = '#EF4444';
+
+function makeTeam(name, base, idp) {
+  const layout = [['GK',1],['DEF',4],['MID',4],['ATT',2]];
+  const players = []; let n = 0;
+  for (const [pos, count] of layout) for (let k = 0; k < count; k++) {
+    const v = Math.round(base + ((n*7)%12) - 6);
+    players.push({ name: pos+n, position: pos, speed:v, stamina:v, technique:v, strength:v });
+    n++;
+  }
+  return { name, players };
+}
+
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const sx = (x) => x / PW * W, sy = (y) => y / PH * H;
+
+let replay = null, startT = 0, paused = false, seed = 1;
+let speed = parseFloat(document.getElementById('speed').value);
+
+function generate() {
+  const home = makeTeam('OZ Family', 58, 'h');
+  const away = makeTeam('Les Lions', 54, 'a');
+  const r = SimEngine.simulate(home, away, seed * 7919 + 13, 360, { record: true });
+  replay = r;
+  document.getElementById('hn').textContent = home.name;
+  document.getElementById('an').textContent = away.name;
+  startT = performance.now();
+}
+
+function drawPitch() {
+  ctx.fillStyle = '#15803d'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 2;
+  ctx.strokeRect(2, 2, W-4, H-4);
+  ctx.beginPath(); ctx.moveTo(W/2, 0); ctx.lineTo(W/2, H); ctx.stroke();
+  ctx.beginPath(); ctx.arc(W/2, H/2, sy(9.15), 0, 7); ctx.stroke();
+  // surfaces
+  const paW = sx(16.5), paH = sy(40.3), paY = (H - paH)/2;
+  ctx.strokeRect(0, paY, paW, paH); ctx.strokeRect(W - paW, paY, paW, paH);
+  // cages (largeur but)
+  const gH = sy(7.32), gY = (H - gH)/2;
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(0, gY, sx(2.2), gH); ctx.fillRect(W - sx(2.2), gY, sx(2.2), gH);
+  ctx.strokeRect(0, gY, sx(2.2), gH); ctx.strokeRect(W - sx(2.2), gY, sx(2.2), gH);
+}
+
+function frameAt(time) {
+  const f = replay.frames; if (!f.length) return null;
+  const last = f[f.length-1].t; const tt = Math.min(time, last);
+  let i = 0; while (i+1 < f.length && f[i+1].t <= tt) i++;
+  const a = f[i], b = f[Math.min(i+1, f.length-1)];
+  const span = Math.max(0.0001, b.t - a.t); const k = Math.min(1, Math.max(0, (tt - a.t)/span));
+  return { a, b, k, done: time >= last };
+}
+
+function render() {
+  requestAnimationFrame(render);
+  if (!replay) return;
+  drawPitch();
+  const time = paused ? (window._pt||0) : ((performance.now() - startT)/1000) * speed;
+  window._pt = time;
+  const fr = frameAt(time); if (!fr) return;
+  const { a, b, k } = fr;
+  // joueurs
+  for (let n = 0; n < a.players.length && n < b.players.length; n++) {
+    const pa = a.players[n], pb = b.players[n];
+    const x = sx(pa.x + (pb.x - pa.x)*k), y = sy(pa.y + (pb.y - pa.y)*k);
+    const hasBall = pa.hasBall || pb.hasBall;
+    ctx.beginPath(); ctx.arc(x, y, hasBall ? 11 : 9, 0, 7);
+    ctx.fillStyle = pa.side === 'home' ? HOME_COLOR : AWAY_COLOR; ctx.fill();
+    ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(JERSEY[pa.slot] ?? (pa.slot+1), x, y);
+  }
+  // ballon
+  const bx = sx(a.ball.x + (b.ball.x - a.ball.x)*k), by = sy(a.ball.y + (b.ball.y - a.ball.y)*k);
+  ctx.beginPath(); ctx.arc(bx, by, 5, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.lineWidth = 0.6; ctx.strokeStyle = '#000'; ctx.stroke();
+  // score / minute
+  document.getElementById('score').textContent = `${a.sh} – ${a.sa}`;
+  document.getElementById('min').textContent = Math.min(90, Math.round(time/360*90)) + "'";
+}
+
+document.getElementById('regen').onclick = () => { seed++; generate(); paused = false; document.getElementById('pause').textContent = 'Pause'; };
+document.getElementById('pause').onclick = (e) => {
+  paused = !paused;
+  if (!paused) startT = performance.now() - (window._pt/speed)*1000;
+  e.target.textContent = paused ? 'Lecture' : 'Pause';
+};
+document.getElementById('speed').oninput = (e) => {
+  const old = window._pt || 0; speed = parseFloat(e.target.value);
+  startT = performance.now() - (old/speed)*1000;
+};
+
+generate(); render();
+</script>
+</body>
+</html>
