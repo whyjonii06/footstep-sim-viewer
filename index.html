@@ -34,6 +34,12 @@
 
 <script src="engine.js"></script>
 <script>
+(function () {
+window.onerror = function (msg, src, line, col) {
+  var f = document.getElementById('feed');
+  if (f) { f.style.color = '#fca5a5'; f.textContent = '⚠️ ' + msg + '  (ligne ' + line + ':' + col + ')'; }
+  return false;
+};
 const PW = 105, PH = 68;
 const JERSEY = [1,2,5,4,3,6,8,7,11,9,10];
 const HOME_COLOR = '#22C55E', AWAY_COLOR = '#EF4444';
@@ -130,7 +136,21 @@ document.getElementById('speed').oninput = (e) => {
   startT = performance.now() - (old/speed)*1000;
 };
 
-generate(); render();
+const feed = document.getElementById('feed');
+if (!window.SimEngine) {
+  feed.style.color = '#fca5a5';
+  feed.textContent = '⚠️ engine.js non chargé (SimEngine introuvable)';
+} else {
+  try {
+    generate();
+    render();
+    feed.textContent = '✅ ' + (replay ? replay.frames.length : 0) + ' frames — lecture en cours';
+  } catch (e) {
+    feed.style.color = '#fca5a5';
+    feed.textContent = '⚠️ ' + (e && e.message ? e.message : e);
+  }
+}
+})();
 </script>
 </body>
 </html>
