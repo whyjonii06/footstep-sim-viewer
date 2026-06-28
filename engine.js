@@ -14,7 +14,7 @@ const K = {
   controlTau: 1.4,
   decideEvery: 0.7,           // s de possession avant décision
   shootMaxDist: 30,
-  goalValue: 11,              // attractivité du tir dans l'EV (→ volume de tirs)
+  goalValue: 13,              // attractivité du tir dans l'EV (→ volume de tirs)
   shootBase: { near: 0.122, mid: 0.055, far: 0.021 }, // <12 / <20 / sinon (conversion)
   shootTechMod: 0.11,
   shootGkMod: 0.08,
@@ -22,7 +22,7 @@ const K = {
   outcomeBlocked: 0.16,
   tackleBase: 0.12,
   tackleRange: 1.4,
-  foulShare: 0.46,            // part des tacles qui sont des fautes
+  foulShare: 0.56,            // part des tacles qui sont des fautes
   passMinProb: 0.22,
   passTechSlope: 0.85,        // pente technique→réussite passe (centrée sur 55)
   passLaneDiv: 6.2,           // + grand = couloir plus exigeant
@@ -31,7 +31,7 @@ const K = {
   yellowProb: 0.19,          // part des fautes → carton jaune
   redGivenYellow: 0.04,
   penConv: 0.76,             // conversion penalty
-  penFromBoxFoul: 0.06,      // part des fautes dans la surface qui sont sifflées penalty
+  penFromBoxFoul: 0.09,      // part des fautes dans la surface qui sont sifflées penalty
   cornerFromBlock: 0.80,     // tir contré → corner
   cornerFromSave: 0.50,      // arrêt → corner (ballon relâché)
   cornerFromMiss: 0.33,      // tir manqué → corner (dévié)
@@ -425,30 +425,21 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       return;
     }
     st.passAtt[o.side]++;
-    // Réussite PROBABILISTE (technique + couloir + distance). Une passe ratée est
-    // interceptée par l'adversaire le mieux placé sur la trajectoire → turnover.
     const prob = passSuccess(o, ft, o.technique, otherSide(o.side));
-    let target = ft, receiverId = mate.id;
-    if (rng.next() >= prob) {
-      let foe = null, fd = 1e9;
-      for (const q of team(otherSide(o.side))) {
-        if (q.role === 'gk') continue;
-        const r = distSeg(q, o, ft);
-        if (r.t > 0 && r.t < 1.05 && r.d < fd) { fd = r.d; foe = q; }
-      }
-      if (foe) { target = { x: foe.x, y: foe.y }; receiverId = foe.id; }
-      else {
-        // Personne sur la trajectoire → passe trop appuyée (overhit) : prolongée au-delà
-        // du receveur, elle peut sortir du terrain (touche / 6 m / corner gérés à la sortie).
-        const dn = norm(ft.x - o.x, ft.y - o.y);
-        target = { x: ft.x + dn.x * 9, y: ft.y + dn.y * 9 };
-        receiverId = null;
-      }
-    }
-    flightReceiverId = receiverId; flightIsShot = false; flightSide = o.side;
-    const dir = norm(target.x - o.x, target.y - o.y); const d = dist(o, target);
-    const sp = Math.min(28, 10 + d * 0.8);
-    ball.vx = dir.x * sp; ball.vy = dir.y * sp; ball.ownerId = null; inFlight = true; lastOwnerSide = o.side;
+    const success = rng.next() < prob;
+    flightReceiverId = success ? mate.id : null;   // ratée = pas de receveur désigné (physique décide)
+    flightIsShot = false; flightSide = o.side;
+    // PHYSIQUE DU BALLON : erreur de DIRECTION + de POIDS — faible si réussie, forte si ratée,
+    // aggravée par la pression et la faible technique. Une passe ratée part à la dérive
+    // (interception, ballon qui traîne, ou sortie — décidé par la géométrie/les sorties).
+    const press = pressureOn(o);
+    const errMag = (success ? 0.05 : 0.22) + (1 - o.technique / 100) * 0.12 + press * 0.05;
+    const ang = Math.atan2(ft.y - o.y, ft.x - o.x) + (rng.next() - 0.5) * 2 * errMag;
+    const weight = success ? rng.range(0.96, 1.06) : rng.range(0.70, 1.35);
+    const d = dist(o, ft) * weight;
+    const sp = Math.min(30, 9 + d * 0.8);
+    ball.vx = Math.cos(ang) * sp; ball.vy = Math.sin(ang) * sp;
+    ball.ownerId = null; inFlight = true; lastOwnerSide = o.side;
   }
 
   function shoot(shooter) {
