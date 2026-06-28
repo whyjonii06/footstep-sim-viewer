@@ -14,18 +14,18 @@ const K = {
   controlTau: 1.4,
   decideEvery: 0.7,           // s de possession avant décision
   shootMaxDist: 30,
-  goalValue: 22,              // attractivité du tir dans l'EV (→ volume de tirs)
-  shootBase: { near: 0.13, mid: 0.058, far: 0.022 }, // <12 / <20 / sinon (conversion)
+  goalValue: 11,              // attractivité du tir dans l'EV (→ volume de tirs)
+  shootBase: { near: 0.122, mid: 0.055, far: 0.021 }, // <12 / <20 / sinon (conversion)
   shootTechMod: 0.07,
   shootGkMod: 0.05,
   outcomeSaved: 0.23,         // part après but
   outcomeBlocked: 0.16,
   tackleBase: 0.12,
   tackleRange: 1.4,
-  foulShare: 0.45,            // part des tacles qui sont des fautes
+  foulShare: 0.40,            // part des tacles qui sont des fautes
   passMinProb: 0.22,
   passTechBase: 0.33,         // base de réussite de passe (avant technique)
-  passLaneDiv: 5.2,           // + grand = couloir plus exigeant
+  passLaneDiv: 6.2,           // + grand = couloir plus exigeant
   speedFloor: 4.2,           // effSpeed = floor + speed/100*spread
   speedSpread: 4.2,
 };
@@ -122,15 +122,22 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   let possessionTime = 0, lastOwnerSide = 'home';
   const center = { x: PW / 2, y: GOAL_Y };
   let phase = 'kickoff', phaseUntil = 1.2, kickoffSide = 'home', celebX = PW / 2, celebY = GOAL_Y;
-  let ctxAtt = 'home', ctxPresser = null, ctxMark = {}, ctxInterceptor = null;
+  let ctxAtt = 'home', ctxPresser = null, ctxMark = {}, ctxInterceptor = null, ctxOffside = PW / 2;
 
   // STATS instrumentées
   const st = {
     poss: { home: 0, away: 0 },
     shots: { home: 0, away: 0 }, sot: { home: 0, away: 0 },
     passAtt: { home: 0, away: 0 }, passComp: { home: 0, away: 0 },
-    fouls: { home: 0, away: 0 },
+    fouls: { home: 0, away: 0 }, offside: { home: 0, away: 0 },
   };
+
+  // Ligne de hors-jeu = x du 2e défenseur le plus profond de l'équipe qui défend.
+  function offsideLineX(defSide) {
+    const xs = team(defSide).map((p) => p.x);
+    if (defSide === 'away') { xs.sort((a, b) => b - a); return xs[1] != null ? xs[1] : PW; }
+    xs.sort((a, b) => a - b); return xs[1] != null ? xs[1] : 0;
+  }
 
   const nearestOpp = (px, py, side) => {
     let best = null, bd = 1e9;
@@ -204,6 +211,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       for (const p of team(defSide)) { if (p.role === 'gk') continue; const d = dist(p, predict); if (d < cd) { cd = d; cand = p; } }
       ctxInterceptor = cand && cd < 9 ? cand.id : null;
     } else ctxInterceptor = null;
+    ctxOffside = offsideLineX(defSide);
   }
 
   function targetFor(p) {
@@ -255,6 +263,8 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const base = bx + dir * (isAtt ? 15 : 8);
       const floor = isAtt ? HALF + 4 : HALF - 8;
       homeX = p.side === 'home' ? Math.max(base, floor) : Math.min(base, PW - floor);
+      // Reste ONSIDE : ne se projette pas au-delà de la ligne de hors-jeu (timing des appels).
+      if (isAtt) homeX = p.side === 'home' ? Math.min(homeX, ctxOffside + 1) : Math.max(homeX, ctxOffside - 1);
     } else if (p.role === 'mid') {
       homeX = bx + dir * (isAtt ? 3 : -3);
     } else homeX = bx;
@@ -296,6 +306,16 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   function doPass(o, mate, through, safe) {
     const lead = through ? { x: attackDir(o.side) * 6, y: 0 } : { x: 0, y: 0 };
     const ft = clampPitch(mate.x + lead.x, mate.y + lead.y);
+    // HORS-JEU : passe vers l'avant à un receveur au-delà de la ligne, dans le camp adverse.
+    const odir = attackDir(o.side);
+    const inOppHalf = o.side === 'home' ? mate.x > HALF : mate.x < HALF;
+    const ahead = (mate.x - ball.x) * odir > 1;
+    const beyond = o.side === 'home' ? mate.x > ctxOffside + 0.5 : mate.x < ctxOffside - 0.5;
+    if (inOppHalf && ahead && beyond) {
+      st.offside[o.side]++;
+      giveBallToMidfield(otherSide(o.side));   // coup franc pour l'équipe qui défend
+      return;
+    }
     st.passAtt[o.side]++;
     // Réussite PROBABILISTE (technique + couloir + distance). Une passe ratée est
     // interceptée par l'adversaire le mieux placé sur la trajectoire → turnover.
@@ -497,7 +517,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   return {
     scoreH, scoreA,
     shots: st.shots, sot: st.sot, goals: { home: scoreH, away: scoreA },
-    passAtt: st.passAtt, passComp: st.passComp, fouls: st.fouls,
+    passAtt: st.passAtt, passComp: st.passComp, fouls: st.fouls, offside: st.offside,
     poss: st.poss,
     frames, events,
   };
