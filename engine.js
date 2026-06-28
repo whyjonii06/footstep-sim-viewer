@@ -22,12 +22,21 @@ const K = {
   outcomeBlocked: 0.16,
   tackleBase: 0.12,
   tackleRange: 1.4,
-  foulShare: 0.40,            // part des tacles qui sont des fautes
+  foulShare: 0.46,            // part des tacles qui sont des fautes
   passMinProb: 0.22,
   passTechBase: 0.33,         // base de réussite de passe (avant technique)
   passLaneDiv: 6.2,           // + grand = couloir plus exigeant
   speedFloor: 4.2,           // effSpeed = floor + speed/100*spread
   speedSpread: 4.2,
+  // ── Coups de pied arrêtés ──
+  yellowProb: 0.19,          // part des fautes → carton jaune
+  redGivenYellow: 0.04,
+  penConv: 0.76,             // conversion penalty
+  penFromBoxFoul: 0.06,      // part des fautes dans la surface qui sont sifflées penalty
+  cornerFromBlock: 0.80,     // tir contré → corner
+  cornerFromSave: 0.50,      // arrêt → corner (ballon relâché)
+  cornerFromMiss: 0.33,      // tir manqué → corner (dévié)
+  cornerShotProb: 0.38,      // un corner débouche sur un tir/tête
 };
 
 // ── RNG déterministe (mulberry32) ────────────────────────────────────────────
@@ -130,6 +139,8 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     shots: { home: 0, away: 0 }, sot: { home: 0, away: 0 },
     passAtt: { home: 0, away: 0 }, passComp: { home: 0, away: 0 },
     fouls: { home: 0, away: 0 }, offside: { home: 0, away: 0 },
+    corners: { home: 0, away: 0 }, throwins: { home: 0, away: 0 },
+    yellow: { home: 0, away: 0 }, red: { home: 0, away: 0 }, pens: { home: 0, away: 0 },
   };
 
   // Ligne de hors-jeu = x du 2e défenseur le plus profond de l'équipe qui défend.
@@ -185,6 +196,51 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     ball.ownerId = mid ? mid.id : null;
     if (mid) { ball.x = mid.x; ball.y = mid.y; } else { ball.x = PW / 2; ball.y = GOAL_Y; }
     ball.vx = 0; ball.vy = 0; lastOwnerSide = side; possessionTime = 0;
+  }
+
+  // ── Coups de pied arrêtés ───────────────────────────────────────────────────
+  function scoreGoal(side) {
+    if (side === 'home') scoreH++; else scoreA++;
+    const netX = side === 'home' ? PW - 1.2 : 1.2;
+    celebX = netX; celebY = GOAL_Y; ball.x = netX; ball.y = GOAL_Y; ball.ownerId = null;
+    inFlight = false; flightIsShot = false;
+    phase = 'celebrate'; phaseUntil = curT + 1.6; kickoffSide = otherSide(side);
+  }
+  function setRestart(side, x, y) {
+    inFlight = false; flightIsShot = false;
+    let taker = null, td = 1e9;
+    for (const p of team(side)) { if (p.role === 'gk') continue; const d = Math.hypot(p.x - x, p.y - y); if (d < td) { td = d; taker = p; } }
+    ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0;
+    ball.ownerId = taker ? taker.id : null; lastOwnerSide = side; possessionTime = 0;
+  }
+  function awardThrowIn(side, x, y) { st.throwins[side]++; setRestart(side, Math.min(Math.max(x, 1), PW - 1), y < HALF ? 0.5 : PH - 0.5); }
+  function awardGoalKick(side) {
+    inFlight = false; flightIsShot = false;
+    const gk = team(side).find((p) => p.role === 'gk');
+    const x = side === 'home' ? 12 : PW - 12;
+    setRestart(side, x, GOAL_Y + rng.range(-18, 18));
+    if (gk) { /* dégagement par un défenseur proche, suffisant */ }
+  }
+  function takePenalty(side) {
+    st.pens[side]++; st.shots[side]++; st.sot[side]++;
+    if (rng.bool(K.penConv)) scoreGoal(side);
+    else giveBallToMidfield(otherSide(side));   // arrêté / sorti → relance adverse
+  }
+  function awardCorner(side) {
+    st.corners[side]++;
+    const g = oppGoal(side);
+    if (rng.bool(K.cornerShotProb)) {
+      // Reprise dans la surface : on amène un attaquant au point de chute → tir au prochain choix.
+      let shooter = null, sd = 1e9;
+      for (const p of team(side)) { if (p.role !== 'att' && p.role !== 'mid') continue; const d = dist(p, g); if (d < sd) { sd = d; shooter = p; } }
+      if (shooter) {
+        shooter.x = g.x - attackDir(side) * 6; shooter.y = GOAL_Y + rng.range(-7, 7);
+        ball.x = shooter.x; ball.y = shooter.y; ball.ownerId = shooter.id;
+        inFlight = false; lastOwnerSide = side; possessionTime = 0.6;   // tirera vite
+      } else giveBallToMidfield(otherSide(side));
+    } else {
+      giveBallToMidfield(otherSide(side));   // corner dégagé
+    }
   }
 
   function computeContext() {
@@ -329,6 +385,13 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         if (r.t > 0 && r.t < 1.05 && r.d < fd) { fd = r.d; foe = q; }
       }
       if (foe) { target = { x: foe.x, y: foe.y }; receiverId = foe.id; }
+      else {
+        // Personne sur la trajectoire → passe trop appuyée (overhit) : prolongée au-delà
+        // du receveur, elle peut sortir du terrain (touche / 6 m / corner gérés à la sortie).
+        const dn = norm(ft.x - o.x, ft.y - o.y);
+        target = { x: ft.x + dn.x * 9, y: ft.y + dn.y * 9 };
+        receiverId = null;
+      }
     }
     flightReceiverId = receiverId; flightIsShot = false; flightSide = o.side;
     const dir = norm(target.x - o.x, target.y - o.y); const d = dist(o, target);
@@ -365,15 +428,17 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     inFlight = false; ball.vx = 0; ball.vy = 0;
     const side = flightSide;
     if (flightOutcome === 'goal') {
-      if (side === 'home') scoreH++; else scoreA++;
-      const netX = side === 'home' ? PW - 1.2 : 1.2;
-      const netY = Math.min(Math.max(ball.y, GOAL_Y - GOAL_HW), GOAL_Y + GOAL_HW);
-      celebX = netX; celebY = netY; ball.x = netX; ball.y = netY;
-      phase = 'celebrate'; phaseUntil = curT + 1.6; kickoffSide = otherSide(side);
+      scoreGoal(side);
     } else if (flightOutcome === 'save') {
-      const gk = team(otherSide(side)).find((p) => p.role === 'gk');
-      ball.ownerId = gk ? gk.id : null; lastOwnerSide = otherSide(side); possessionTime = 0;
-    } else { giveBallToMidfield(otherSide(side)); }
+      if (rng.bool(K.cornerFromSave)) { awardCorner(side); }   // relâché → corner
+      else { const gk = team(otherSide(side)).find((p) => p.role === 'gk'); ball.ownerId = gk ? gk.id : null; lastOwnerSide = otherSide(side); possessionTime = 0; }
+    } else if (flightOutcome === 'block') {
+      if (rng.bool(K.cornerFromBlock)) awardCorner(side);      // contré → corner
+      else giveBallToMidfield(otherSide(side));
+    } else { // miss : dévié en corner, sinon 6 mètres
+      if (rng.bool(K.cornerFromMiss)) awardCorner(side);
+      else awardGoalKick(otherSide(side));
+    }
     flightIsShot = false;
   }
 
@@ -412,8 +477,18 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
 
   function attemptTackle(d, c) {
     const pT = Math.min(0.5, K.tackleBase + (d.strength - c.technique) / 200 + 0.1);
-    if (rng.bool(pT)) {
-      if (rng.bool(K.foulShare)) st.fouls[d.side]++;
+    if (!rng.bool(pT)) return;
+    if (rng.bool(K.foulShare)) {
+      // FAUTE → l'équipe attaquée (c) obtient le coup franc (PAS le fauteur).
+      st.fouls[d.side]++;
+      if (rng.bool(K.yellowProb)) { if (rng.bool(K.redGivenYellow)) st.red[d.side]++; else st.yellow[d.side]++; }
+      // Penalty si la faute est dans la surface du défenseur (près de SON but).
+      const ownG = ownGoal(d.side);
+      const inBox = Math.abs(c.x - ownG.x) < 16.5 && Math.abs(c.y - GOAL_Y) < 20.16;
+      if (inBox && rng.bool(K.penFromBoxFoul)) takePenalty(c.side);
+      else setRestart(c.side, c.x, c.y);   // coup franc
+    } else {
+      // Tacle propre → le défenseur récupère.
       ball.ownerId = d.id; lastOwnerSide = d.side; possessionTime = 0;
     }
   }
@@ -487,7 +562,13 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
             lastOwnerSide = rcv.side;
           }
         } else if (flightIsShot && (flightSide === 'home' ? ball.x >= PW - 0.5 : ball.x <= 0.5)) resolveShot();
-        if (phase === 'play' && (ball.x < -2 || ball.x > PW + 2 || ball.y < -2 || ball.y > PH + 2)) giveBallToMidfield(otherSide(lastOwnerSide));
+        if (phase === 'play' && (ball.y < 0 || ball.y > PH)) {
+          awardThrowIn(otherSide(lastOwnerSide), ball.x, ball.y);   // touche
+        } else if (phase === 'play' && (ball.x < 0 || ball.x > PW)) {
+          const defGoalSide = ball.x < 0 ? 'home' : 'away';        // de quel but on sort
+          if (lastOwnerSide === defGoalSide) awardCorner(otherSide(defGoalSide)); // défenseur l'a sortie → corner
+          else awardGoalKick(defGoalSide);                          // attaquant l'a sortie → 6 mètres
+        }
       } else if (owner) {
         ball.x = owner.x + attackDir(owner.side) * 1; ball.y = owner.y;
         possessionTime += dt;
@@ -518,6 +599,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     scoreH, scoreA,
     shots: st.shots, sot: st.sot, goals: { home: scoreH, away: scoreA },
     passAtt: st.passAtt, passComp: st.passComp, fouls: st.fouls, offside: st.offside,
+    corners: st.corners, throwins: st.throwins, yellow: st.yellow, red: st.red, pens: st.pens,
     poss: st.poss,
     frames, events,
   };
