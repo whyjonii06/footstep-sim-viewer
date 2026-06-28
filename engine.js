@@ -132,6 +132,9 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   const center = { x: PW / 2, y: GOAL_Y };
   let phase = 'kickoff', phaseUntil = 1.2, kickoffSide = 'home', celebX = PW / 2, celebY = GOAL_Y;
   let ctxAtt = 'home', ctxPresser = null, ctxMark = {}, ctxInterceptor = null, ctxOffside = PW / 2;
+  let ctxMent = { home: 0, away: 0 };   // mentalité selon score/temps (-1 défensif … +1 offensif)
+  let subsDone = false;
+  const extraTicks = Math.floor(rng.range(2, 5) / 90 * displaySeconds * 20);   // temps additionnel
 
   // STATS instrumentées
   const st = {
@@ -141,6 +144,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     fouls: { home: 0, away: 0 }, offside: { home: 0, away: 0 },
     corners: { home: 0, away: 0 }, throwins: { home: 0, away: 0 },
     yellow: { home: 0, away: 0 }, red: { home: 0, away: 0 }, pens: { home: 0, away: 0 },
+    lateGoals: 0, totalGoals: 0,
   };
 
   // Ligne de hors-jeu = x du 2e défenseur le plus profond de l'équipe qui défend.
@@ -201,6 +205,8 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   // ── Coups de pied arrêtés ───────────────────────────────────────────────────
   function scoreGoal(side) {
     if (side === 'home') scoreH++; else scoreA++;
+    st.totalGoals++;
+    if (curT / displaySeconds * 90 >= 76) st.lateGoals++;
     const netX = side === 'home' ? PW - 1.2 : 1.2;
     celebX = netX; celebY = GOAL_Y; ball.x = netX; ball.y = GOAL_Y; ball.ownerId = null;
     inFlight = false; flightIsShot = false;
@@ -306,7 +312,8 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const isCB = p.slot === 2 || p.slot === 3;
       const capX = isCB ? HALF - 2 : HALF + 6;
       const cap = (x) => (p.side === 'home' ? Math.min(x, capX) : Math.max(x, PW - capX));
-      let x = cap(isAtt ? HALF - 8 : ball.x - dir * 13);
+      const lineDrop = 13 - ctxMent[p.side] * 9;   // mentalité : bétonne = recule, pousse = ligne haute
+      let x = cap(isAtt ? HALF - 8 : ball.x - dir * lineDrop);
       let y = p.anchorY;
       let th = null, td = 1e9;
       for (const o of opp(p.side)) { if (o.role !== 'att' && o.role !== 'mid') continue; const d = dist(o, p); if (d < td) { td = d; th = o; } }
@@ -336,8 +343,9 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
 
       // Les attaquants rapides poussent la ligne (course plus tôt, risque de hors-jeu).
       const aggro = p.speed > 60 ? 3 : 1.5;
+      const ment = ctxMent[p.side];   // mené tard → seuil de course relevé (on tente plus)
       if (p.role === 'att') {
-        if (carrierPress < 0.6 && !marked) {
+        if (carrierPress < 0.6 + ment * 0.25 && !marked) {
           // COURSE EN PROFONDEUR : à la limite (parfois au-delà → hors-jeu), espace le moins tenu.
           const runX = dir > 0 ? Math.min(ctxOffside + aggro, ball.x + 24) : Math.max(ctxOffside - aggro, ball.x - 24);
           return clampPitch(runX + jit.x, pickY(runX, p.anchorY, 11) + jit.y);
@@ -488,7 +496,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     if (gd < K.shootMaxDist) {
       const base = gd < 12 ? K.shootBase.near : gd < 20 ? K.shootBase.mid : K.shootBase.far;
       const pg = Math.max(0.02, base + (o.technique - 50) / 100 * K.shootTechMod);
-      const ev = pg * K.goalValue * (1 - press * 0.3);
+      const ev = pg * K.goalValue * (1 - press * 0.3) * (1 + ctxMent[o.side] * 0.5);
       if (ev > bestEV) { bestEV = ev; bestOpt = 'shoot'; }
     }
     const bp = bestPassOption(o);
@@ -555,14 +563,42 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   let halftimeDone = false;
   let curT = 0;
 
-  for (let tick = 0; tick <= totalTicks; tick++) {
+  for (let tick = 0; tick <= totalTicks + extraTicks; tick++) {
     const t = tick * dt; curT = t;
+    const prog = t / displaySeconds;   // 0..1 (peut dépasser 1 = temps additionnel)
 
     if (!halftimeDone && phase === 'play' && t >= displaySeconds / 2) {
       halftimeDone = true;
-      for (const p of all) p.speedMul = 0.80 + p.stamina / 100 * 0.20;
       phase = 'kickoff'; kickoffSide = 'away'; phaseUntil = t + 2;
       ball.x = center.x; ball.y = center.y; ball.ownerId = null; inFlight = false;
+    }
+
+    // ── FLUX DE MATCH (1×/s) : fatigue progressive, mentalité, remplacements ──
+    if (tick % 20 === 0) {
+      for (const p of all) {
+        const eff = Math.max(0, prog - (p.subProg || 0));          // temps joué depuis frais
+        const fatigue = eff * (0.12 + (1 - p.stamina / 100) * 0.22); // l'endurance limite la baisse
+        p.speedMul = Math.max(0.72, 1 - fatigue);
+      }
+      // Remplacements (~78') : on rafraîchit les 2 joueurs de champ les plus fatigués de chaque équipe.
+      if (!subsDone && prog > 0.78) {
+        subsDone = true;
+        for (const side of ['home', 'away']) {
+          team(side).filter((p) => p.role !== 'gk').sort((a, b) => a.speedMul - b.speedMul).slice(0, 2)
+            .forEach((p) => { p.subProg = prog; });
+        }
+      }
+      // Mentalité selon le score et le temps.
+      for (const side of ['home', 'away']) {
+        const diff = side === 'home' ? scoreH - scoreA : scoreA - scoreH;
+        let m = 0;
+        if (prog >= 0.6) {
+          if (diff >= 2) m = -1;                                  // mène nettement → bétonne
+          else if (diff <= -1) m = Math.min(1, 0.4 + (prog - 0.6) * 1.6); // mené → pousse de + en +
+          else if (diff === 1 && prog > 0.85) m = -0.5;           // mène d'1 en fin → gère
+        }
+        ctxMent[side] = m;
+      }
     }
 
     if (phase === 'play') { computeContext(); if (tick % 2 === 0) computeControl(); }
@@ -640,6 +676,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     shots: st.shots, sot: st.sot, goals: { home: scoreH, away: scoreA },
     passAtt: st.passAtt, passComp: st.passComp, fouls: st.fouls, offside: st.offside,
     corners: st.corners, throwins: st.throwins, yellow: st.yellow, red: st.red, pens: st.pens,
+    lateGoals: st.lateGoals, totalGoalsTracked: st.totalGoals,
     poss: st.poss,
     frames, events,
   };
