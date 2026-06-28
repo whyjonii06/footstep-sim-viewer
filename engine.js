@@ -313,13 +313,53 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       if (th && td < 24) { y = p.anchorY * 0.45 + th.y * 0.55; x = cap((x + th.x - dir * 2) / 2); }
       return clampPitch(x + jit.x, y + jit.y);
     }
+    // ── JEU SANS BALLON (équipe en possession) : course en profondeur vs appel court ──
+    if (isAtt && (p.role === 'att' || p.role === 'mid')) {
+      const carrier = owner && owner.side === p.side ? owner : null;
+      const carrierPress = carrier ? pressureOn(carrier) : 0.5;
+      const mk = nearestOpp(p.x, p.y, p.side);
+      const marked = dist(mk, p) < 4;
+      const openAt = (xx, yy) => 1 - Math.max(0, Math.min(1, -controlAt(xx, yy) * sideSign(p.side)));
+      const pickY = (xx, center, spread) => {
+        let bestY = center, bs = -1e9;
+        for (const d of [-spread, -spread / 2, 0, spread / 2, spread]) {
+          const yy = Math.min(Math.max(center + d, 6), PH - 6);
+          const s = openAt(xx, yy) - Math.abs(yy - p.anchorY) * 0.012;
+          if (s > bs) { bs = s; bestY = yy; }
+        }
+        return bestY;
+      };
+      // Un milieu central fait la course de 3e homme quand le ballon est dans le dernier tiers.
+      const mids = team(p.side).filter((q) => q.role === 'mid');
+      const runner = mids.length ? mids.reduce((b, q) => Math.abs(q.anchorY - GOAL_Y) < Math.abs(b.anchorY - GOAL_Y) ? q : b) : null;
+      const advanced = (ball.x - HALF) * dir > 12;
+
+      // Les attaquants rapides poussent la ligne (course plus tôt, risque de hors-jeu).
+      const aggro = p.speed > 60 ? 3 : 1.5;
+      if (p.role === 'att') {
+        if (carrierPress < 0.6 && !marked) {
+          // COURSE EN PROFONDEUR : à la limite (parfois au-delà → hors-jeu), espace le moins tenu.
+          const runX = dir > 0 ? Math.min(ctxOffside + aggro, ball.x + 24) : Math.max(ctxOffside - aggro, ball.x - 24);
+          return clampPitch(runX + jit.x, pickY(runX, p.anchorY, 11) + jit.y);
+        }
+        // APPEL DANS LES PIEDS : poche d'espace vers le ballon.
+        const showX = ball.x - dir * 5;
+        return clampPitch(showX + jit.x, pickY(showX, ball.y, 12) + jit.y);
+      }
+      if (p.role === 'mid' && runner && p.id === runner.id && advanced && carrierPress < 0.65) {
+        // 3e HOMME : course dans la surface.
+        const runX = dir > 0 ? Math.min(ctxOffside, ball.x + 14) : Math.max(ctxOffside, ball.x - 14);
+        return clampPitch(runX + jit.x, GOAL_Y + (p.anchorY - GOAL_Y) * 0.4 + jit.y);
+      }
+      // autres milieux : soutien (bloc ci-dessous)
+    }
+
     const bx = ball.x;
     let homeX;
     if (p.role === 'att') {
       const base = bx + dir * (isAtt ? 15 : 8);
       const floor = isAtt ? HALF + 4 : HALF - 8;
       homeX = p.side === 'home' ? Math.max(base, floor) : Math.min(base, PW - floor);
-      // Reste ONSIDE : ne se projette pas au-delà de la ligne de hors-jeu (timing des appels).
       if (isAtt) homeX = p.side === 'home' ? Math.min(homeX, ctxOffside + 1) : Math.max(homeX, ctxOffside - 1);
     } else if (p.role === 'mid') {
       homeX = bx + dir * (isAtt ? 3 : -3);
