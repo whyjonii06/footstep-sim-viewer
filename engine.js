@@ -129,7 +129,8 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   const control = new Float64Array(GX * GY);
   const cellCenter = (i, j) => ({ x: (i + 0.5) * cellW, y: (j + 0.5) * cellH });
 
-  let ball = { x: PW / 2, y: GOAL_Y, vx: 0, vy: 0, ownerId: null };
+  let ball = { x: PW / 2, y: GOAL_Y, vx: 0, vy: 0, z: 0, vz: 0, ownerId: null };
+  const G = 17;   // gravité (unités sim) pour les ballons aériens (centres)
   let scoreH = 0, scoreA = 0;
   let inFlight = false, flightReceiverId = null, flightIsShot = false, flightOutcome = '', flightSide = 'home';
   let possessionTime = 0, lastOwnerSide = 'home';
@@ -213,7 +214,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const mid = team(side).find((p) => p.role === 'mid');
     ball.ownerId = mid ? mid.id : null;
     if (mid) { ball.x = mid.x; ball.y = mid.y; } else { ball.x = PW / 2; ball.y = GOAL_Y; }
-    ball.vx = 0; ball.vy = 0; lastOwnerSide = side; possessionTime = 0;
+    ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0; lastOwnerSide = side; possessionTime = 0;
   }
 
   // ── Coups de pied arrêtés ───────────────────────────────────────────────────
@@ -230,7 +231,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   // et on passe en phase 'setpiece' (le tireur s'y rend, courte pause, puis il joue).
   function deadBall(side, x, y, type) {
     inFlight = false; flightIsShot = false;
-    spX = x; spY = y; ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0; ball.ownerId = null;
+    spX = x; spY = y; ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0; ball.ownerId = null;
     let taker = null, td = 1e9;
     for (const p of team(side)) {
       if (p.role === 'gk' && type !== 'goalkick') continue;
@@ -244,7 +245,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   function awardGoalKick(side) {   // 6 mètres = restart RAPIDE (peu d'enjeu visuel)
     inFlight = false; flightIsShot = false;
     const x = side === 'home' ? 14 : PW - 14, y = GOAL_Y + rng.range(-12, 12);
-    ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0;
+    ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
     let taker = null, td = 1e9;
     for (const p of team(side)) { if (p.role !== 'def' && p.role !== 'gk') continue; const d = Math.hypot(p.x - x, p.y - y); if (d < td) { td = d; taker = p; } }
     ball.ownerId = taker ? taker.id : null; lastOwnerSide = side; possessionTime = 0;
@@ -446,9 +447,12 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     return best ? { mate: best, through: bestThrough } : null;
   }
 
-  function doPass(o, mate, through, safe, noOff) {
+  function doPass(o, mate, through, safe, noOff, loft) {
     const lead = through ? { x: attackDir(o.side) * 6, y: 0 } : { x: 0, y: 0 };
     const ft = clampPitch(mate.x + lead.x, mate.y + lead.y);
+    // CENTRE détecté auto : passeur large dans le dernier tiers vers un receveur central (surface).
+    const isCross = loft || ((Math.abs(o.y - GOAL_Y) > 16) && ((o.x - HALF) * attackDir(o.side) > 12)
+      && (Math.abs(mate.y - GOAL_Y) < 18) && ((mate.x - HALF) * attackDir(o.side) > 18));
     // HORS-JEU : passe vers l'avant à un receveur au-delà de la ligne (sauf corner → noOff).
     const odir = attackDir(o.side);
     const inOppHalf = o.side === 'home' ? mate.x > HALF : mate.x < HALF;
@@ -472,8 +476,13 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const ang = Math.atan2(ft.y - o.y, ft.x - o.x) + (rng.next() - 0.5) * 2 * errMag;
     const weight = success ? rng.range(0.96, 1.06) : rng.range(0.70, 1.35);
     const d = dist(o, ft) * weight;
-    const sp = Math.min(30, 9 + d * 0.8);
+    const sp = isCross ? Math.min(20, 7 + d * 0.45) : Math.min(30, 9 + d * 0.8);   // centre = plus lent
     ball.vx = Math.cos(ang) * sp; ball.vy = Math.sin(ang) * sp;
+    if (isCross) {
+      // BALLON AÉRIEN : il s'élève et retombe sur la zone de chute → franchit les défenseurs au sol.
+      const flight = dist(o, ft) / sp;
+      ball.z = 0.5; ball.vz = G * flight / 2;
+    } else { ball.z = 0; ball.vz = 0; }
     ball.ownerId = null; inFlight = true; lastOwnerSide = o.side;
     if (!safe) { lastPasser = o.id; lastPassT = curT; }   // une-deux (sauf passe de sécurité)
   }
@@ -504,7 +513,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   }
 
   function resolveShot() {
-    inFlight = false; ball.vx = 0; ball.vy = 0;
+    inFlight = false; ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
     const side = flightSide;
     if (flightOutcome === 'goal') {
       scoreGoal(side);
@@ -681,7 +690,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
               const atts = team(spSide).filter((p) => (p.role === 'att' || p.role === 'mid') && p.id !== taker.id)
                 .sort((a, b) => dist(a, g) - dist(b, g)).slice(0, 2);
               atts.forEach((p, k) => { p.x = g.x - attackDir(spSide) * 6; p.y = GOAL_Y + (k === 0 ? -5 : 5); });
-              if (atts[0]) doPass(taker, atts[0], false, false, true);
+              if (atts[0]) doPass(taker, atts[0], false, false, true, true);
             }
           }
         } else phase = 'play';
@@ -690,11 +699,12 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const owner = ball.ownerId ? byId[ball.ownerId] : null;
       if (inFlight) {
         ball.x += ball.vx * dt; ball.y += ball.vy * dt; ball.vx *= 0.985; ball.vy *= 0.985;
+        if (ball.z > 0 || ball.vz !== 0) { ball.z += ball.vz * dt; ball.vz -= G * dt; if (ball.z <= 0) { ball.z = 0; ball.vz = 0; } }
         let rcv = null, rd = 1e9; for (const p of all) { const d = dist(p, ball); if (d < rd) { rd = d; rcv = p; } }
-        if (rcv && rd < 1.6) {
+        if (rcv && rd < 1.6 && ball.z < 1.8) {   // réception seulement quand le ballon est redescendu (centre franchit les défenseurs)
           if (flightIsShot) resolveShot();
           else {
-            inFlight = false; ball.ownerId = rcv.id; ball.vx = 0; ball.vy = 0; possessionTime = 0;
+            inFlight = false; ball.ownerId = rcv.id; ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0; possessionTime = 0;
             if (rcv.side === flightSide) st.passComp[flightSide]++;  // passe réussie (reçue par un coéquipier)
             lastOwnerSide = rcv.side;
           }
@@ -707,7 +717,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
           else awardGoalKick(defGoalSide);                          // attaquant l'a sortie → 6 mètres
         }
       } else if (owner) {
-        ball.x = owner.x + attackDir(owner.side) * 1; ball.y = owner.y;
+        ball.x = owner.x + attackDir(owner.side) * 1; ball.y = owner.y; ball.z = 0; ball.vz = 0;
         possessionTime += dt;
         const press = pressureOn(owner);
         if (possessionTime > K.decideEvery || (press > 0.6 && possessionTime > 0.25)) { makeDecision(owner, press); possessionTime = 0; }
@@ -726,7 +736,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     if (REC && tick % keyframeEvery === 0) {
       frames.push({
         t,
-        ball: { x: ball.x, y: ball.y },
+        ball: { x: ball.x, y: ball.y, z: ball.z },
         players: all.map((p) => ({ slot: p.slot, side: p.side, x: p.x, y: p.y, hasBall: ball.ownerId === p.id })),
         sh: scoreH, sa: scoreA,
       });

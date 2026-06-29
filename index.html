@@ -144,9 +144,17 @@ function render() {
     ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.round(pr)}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(JERSEY[pa.slot] ?? (pa.slot+1), x, y);
   }
-  // ballon
+  // ballon (avec hauteur : ombre au sol + ballon soulevé/grossi quand il est en l'air)
+  const bz = (a.ball.z || 0) + ((b.ball.z || 0) - (a.ball.z || 0)) * k;
   const bx = wx(ballX), by = wy(ballY);
-  ctx.beginPath(); ctx.arc(bx, by, Math.min(7, Math.max(4, sc*0.3)), 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
+  const br = Math.min(7, Math.max(4, sc * 0.3));
+  if (bz > 0.3) {
+    ctx.beginPath(); ctx.ellipse(bx, by, br * 0.95, br * 0.5, 0, 0, 7);
+    ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fill();
+  }
+  const drawY = by - bz * sc * 0.35;                       // décalage visuel vers le haut
+  ctx.beginPath(); ctx.arc(bx, drawY, br * (1 + Math.min(bz / 9, 0.5)), 0, 7);
+  ctx.fillStyle = '#fff'; ctx.fill();
   ctx.lineWidth = 0.8; ctx.strokeStyle = '#000'; ctx.stroke();
   // score / minute
   document.getElementById('score').textContent = `${a.sh} – ${a.sa}`;
