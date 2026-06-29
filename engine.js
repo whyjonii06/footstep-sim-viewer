@@ -138,6 +138,14 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   let spTaker = null, spSide = 'home', spType = '', spX = PW / 2, spY = GOAL_Y;   // balle arrêtée
   let ctxAtt = 'home', ctxPresser = null, ctxMark = {}, ctxInterceptor = null, ctxOffside = PW / 2;
   let ctxMent = { home: 0, away: 0 };   // mentalité selon score/temps (-1 défensif … +1 offensif)
+  let gainT = { home: -9, away: -9 }, gainX = { home: HALF, away: HALF }, prevPossSide = 'home';
+  // Mentalité effective = mentalité + bonus de CONTRE (récup basse récente → verticalité).
+  const mentOf = (s) => {
+    let m = ctxMent[s] || 0;
+    const wonLow = s === 'home' ? gainX[s] < HALF : gainX[s] > HALF;
+    if (wonLow && curT - gainT[s] < 2.5) m += 0.45;
+    return m;
+  };
   let subsDone = false;
   const extraTicks = Math.floor(rng.range(2, 5) / 90 * displaySeconds * 20);   // temps additionnel
 
@@ -326,7 +334,15 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const isCB = p.slot === 2 || p.slot === 3;
       const capX = isCB ? HALF - 3 : HALF + 3;   // centraux jamais au-delà du milieu, latéraux +3 m max
       const cap = (x) => (p.side === 'home' ? Math.min(x, capX) : Math.max(x, PW - capX));
-      const lineDrop = 13 - ctxMent[p.side] * 9;   // mentalité : bétonne = recule, pousse = ligne haute
+      // DÉBORDEMENT : en attaque, le latéral monte sur son aile si le ballon est avancé de son côté.
+      if (isAtt && (p.slot === 1 || p.slot === 4)) {
+        const sameFlank = (p.anchorY < GOAL_Y) === (ball.y < GOAL_Y);
+        if (sameFlank && (ball.x - HALF) * dir > 2) {
+          const ox = dir > 0 ? Math.min(ball.x + 6, ctxOffside + 1) : Math.max(ball.x - 6, ctxOffside - 1);
+          return clampPitch(ox + jit.x, p.anchorY + jit.y);
+        }
+      }
+      const lineDrop = 13 - mentOf(p.side) * 9;   // mentalité : bétonne = recule, pousse = ligne haute
       let x = cap(isAtt ? HALF - 8 : ball.x - dir * lineDrop);
       // LIGNE PLATE : x partagé (même hauteur pour les 4) ; on suit son secteur
       // LATÉRALEMENT seulement (en y) → la ligne ne se casse pas. Le pressing/marquage
@@ -360,7 +376,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
 
       // Les attaquants rapides poussent la ligne (course plus tôt, risque de hors-jeu).
       const aggro = p.speed > 60 ? 3 : 1.5;
-      const ment = ctxMent[p.side];   // mené tard → seuil de course relevé (on tente plus)
+      const ment = mentOf(p.side);   // mené tard → seuil de course relevé (on tente plus)
       if (p.role === 'att') {
         if (carrierPress < 0.6 + ment * 0.25 && !marked) {
           // COURSE EN PROFONDEUR : à la limite (parfois au-delà → hors-jeu), espace le moins tenu.
@@ -504,7 +520,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     if (gd < K.shootMaxDist) {
       const base = gd < 12 ? K.shootBase.near : gd < 20 ? K.shootBase.mid : K.shootBase.far;
       const pg = Math.max(0.02, base + (o.technique - 55) / 100 * K.shootTechMod);
-      const ev = pg * K.goalValue * (1 - press * 0.3) * (1 + ctxMent[o.side] * 0.5);
+      const ev = pg * K.goalValue * (1 - press * 0.3) * (1 + mentOf(o.side) * 0.5);
       if (ev > bestEV) { bestEV = ev; bestOpt = 'shoot'; }
     }
     const bp = bestPassOption(o);
@@ -690,6 +706,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       }
       // possession (par tick de jeu)
       const posSide = owner ? owner.side : lastOwnerSide;
+      if (posSide !== prevPossSide) { gainT[posSide] = t; gainX[posSide] = ball.x; prevPossSide = posSide; }  // récup → fenêtre de contre
       st.poss[posSide]++;
     }
 
