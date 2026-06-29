@@ -32,9 +32,9 @@ const K = {
   redGivenYellow: 0.04,
   penConv: 0.76,             // conversion penalty
   penFromBoxFoul: 0.11,      // part des fautes dans la surface qui sont sifflées penalty
-  cornerFromBlock: 0.80,     // tir contré → corner
-  cornerFromSave: 0.50,      // arrêt → corner (ballon relâché)
-  cornerFromMiss: 0.33,      // tir manqué → corner (dévié)
+  cornerFromBlock: 0.78,     // tir contré → corner
+  cornerFromSave: 0.55,      // arrêt → corner (ballon relâché)
+  cornerFromMiss: 0.26,      // tir manqué → corner (dévié)
   cornerShotProb: 0.38,      // un corner débouche sur un tir/tête
 };
 
@@ -141,6 +141,8 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   let ctxMent = { home: 0, away: 0 };   // mentalité selon score/temps (-1 défensif … +1 offensif)
   let gainT = { home: -9, away: -9 }, gainX = { home: HALF, away: HALF }, prevPossSide = 'home';
   let lastPasser = null, lastPassT = -9;   // une-deux : le passeur plonge pour le retour
+  let causeText = '', causeX = 0, causeY = 0, causeUntil = -9;   // CAUSE de l'arrêt de jeu (lisibilité viewer)
+  const flashCause = (txt, x, y) => { causeText = txt; causeX = x; causeY = y; causeUntil = curT + 1.4; };
   // Mentalité effective = mentalité + bonus de CONTRE (récup basse récente → verticalité).
   const mentOf = (s) => {
     let m = ctxMent[s] || 0;
@@ -479,6 +481,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const beyond = o.side === 'home' ? mate.x > ctxOffside + 0.5 : mate.x < ctxOffside - 0.5;
     if (!noOff && inOppHalf && ahead && beyond) {
       st.offside[o.side]++;
+      flashCause('Hors-jeu', mate.x, mate.y);
       deadBall(otherSide(o.side), mate.x, mate.y, 'freekick');   // coup franc joué pour l'équipe qui défend
       return;
     }
@@ -537,12 +540,15 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     if (flightOutcome === 'goal') {
       scoreGoal(side);
     } else if (flightOutcome === 'save') {
+      flashCause('Arrêt du gardien', ball.x, ball.y);
       if (rng.bool(K.cornerFromSave)) { awardCorner(side); }   // relâché → corner
       else { const gk = team(otherSide(side)).find((p) => p.role === 'gk'); ball.ownerId = gk ? gk.id : null; lastOwnerSide = otherSide(side); possessionTime = 0; }
     } else if (flightOutcome === 'block') {
+      flashCause('Tir contré', ball.x, ball.y);
       if (rng.bool(K.cornerFromBlock)) awardCorner(side);      // contré → corner
       else giveBallToMidfield(otherSide(side));
     } else { // miss : dévié en corner, sinon 6 mètres
+      flashCause('Tir manqué', ball.x, ball.y);
       if (rng.bool(K.cornerFromMiss)) awardCorner(side);
       else awardGoalKick(otherSide(side));
     }
@@ -601,8 +607,8 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       // Penalty si la faute est dans la surface du défenseur (près de SON but).
       const ownG = ownGoal(d.side);
       const inBox = Math.abs(c.x - ownG.x) < 16.5 && Math.abs(c.y - GOAL_Y) < 20.16;
-      if (inBox && rng.bool(K.penFromBoxFoul)) takePenalty(c.side);
-      else deadBall(c.side, c.x, c.y, 'freekick');   // coup franc joué
+      if (inBox && rng.bool(K.penFromBoxFoul)) { flashCause('Penalty !', c.x, c.y); takePenalty(c.side); }
+      else { flashCause('Faute', c.x, c.y); deadBall(c.side, c.x, c.y, 'freekick'); }   // coup franc joué
     } else {
       // Tacle propre → le défenseur récupère.
       ball.ownerId = d.id; lastOwnerSide = d.side; possessionTime = 0;
@@ -766,6 +772,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         players: all.map((p) => ({ slot: p.slot, side: p.side, x: p.x, y: p.y, hasBall: ball.ownerId === p.id })),
         sh: scoreH, sa: scoreA,
         sp: phase === 'setpiece' ? { x: spX, y: spY, slot: spTaker ? byId[spTaker].slot : -1, side: spSide, type: spType } : null,
+        cause: curT < causeUntil ? { txt: causeText, x: causeX, y: causeY } : null,
       });
     }
   }
