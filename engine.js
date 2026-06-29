@@ -17,7 +17,7 @@ const K = {
   goalValue: 23,              // attractivité du tir dans l'EV (→ volume de tirs)
   shootBase: { near: 0.25, mid: 0.152, far: 0.058 }, // <12 / <20 / sinon (conversion)
   shootTechMod: 0.11,
-  shootGkMod: 0.08,
+  shootGkMod: 0.11,
   outcomeSaved: 0.23,         // part après but
   outcomeBlocked: 0.16,
   tackleBase: 0.12,
@@ -132,7 +132,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   let ball = { x: PW / 2, y: GOAL_Y, vx: 0, vy: 0, z: 0, vz: 0, ownerId: null };
   const G = 17;   // gravité (unités sim) pour les ballons aériens (centres)
   let scoreH = 0, scoreA = 0;
-  let inFlight = false, flightReceiverId = null, flightIsShot = false, flightOutcome = '', flightSide = 'home';
+  let inFlight = false, flightReceiverId = null, flightIsShot = false, flightOutcome = '', flightSide = 'home', flightCross = false;
   let possessionTime = 0, lastOwnerSide = 'home';
   const center = { x: PW / 2, y: GOAL_Y };
   let phase = 'kickoff', phaseUntil = 1.2, kickoffSide = 'home', celebX = PW / 2, celebY = GOAL_Y;
@@ -311,6 +311,11 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const ballInOwn = p.side === 'home' ? ball.x < HALF : ball.x > HALF;
       if (!ballInOwn) return { x: g.x + dir * 2, y: GOAL_Y };   // ballon loin → reste sur sa ligne, centré
       const dBall = dist(ball, g);
+      // SWEEPER : ballon ADVERSE en mouvement (passe en profondeur/centre, pas un tir) qui file
+      // dans sa surface → le gardien SORT le couper (sortie au sol/aérienne).
+      if (inFlight && !flightIsShot && lastOwnerSide !== p.side && dBall < 16) {
+        return clampPitch(ball.x + ball.vx * 0.3, ball.y + ball.vy * 0.3);
+      }
       // Sortie progressive selon la proximité du ballon, agressive en un-contre-un.
       let comeOut = 2 + Math.max(0, (32 - dBall) / 32) * 7;
       const owner = ball.ownerId ? byId[ball.ownerId] : null;
@@ -387,11 +392,13 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const runner = mids.length ? mids.reduce((b, q) => Math.abs(q.anchorY - GOAL_Y) < Math.abs(b.anchorY - GOAL_Y) ? q : b) : null;
       const advanced = (ball.x - HALF) * dir > 12;
 
-      // Les attaquants rapides poussent la ligne (course plus tôt, risque de hors-jeu).
-      const aggro = p.speed > 60 ? 3 : 1.5;
+      // PROFIL : plus on est RAPIDE, plus on plonge profond et tôt (continu, pas un seuil).
+      const aggro = 1 + Math.max(0, p.speed - 50) / 100 * 5;
+      // Un joueur RAPIDE privilégie la course en profondeur ; un joueur TECHNIQUE vient se montrer.
+      const runBias = (p.speed - p.technique) / 100;        // >0 = profil "fileur", <0 = profil "meneur"
       const ment = mentOf(p.side);   // mené tard → seuil de course relevé (on tente plus)
       if (p.role === 'att') {
-        if (carrierPress < 0.6 + ment * 0.25 && !marked) {
+        if (carrierPress < 0.6 + ment * 0.25 + runBias * 0.4 && !marked) {
           // COURSE EN PROFONDEUR : à la limite (parfois au-delà → hors-jeu), espace le moins tenu.
           const runX = dir > 0 ? Math.min(ctxOffside + aggro, ball.x + 24) : Math.max(ctxOffside - aggro, ball.x - 24);
           return clampPitch(runX + jit.x, pickY(runX, p.anchorY, 11) + jit.y);
@@ -489,7 +496,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const prob = passSuccess(o, ft, o.technique, otherSide(o.side));
     const success = rng.next() < prob;
     flightReceiverId = success ? mate.id : null;   // ratée = pas de receveur désigné (physique décide)
-    flightIsShot = false; flightSide = o.side;
+    flightIsShot = false; flightSide = o.side; flightCross = isCross;
     // PHYSIQUE DU BALLON : erreur de DIRECTION + de POIDS — faible si réussie, forte si ratée,
     // aggravée par la pression et la faible technique. Une passe ratée part à la dérive
     // (interception, ballon qui traîne, ou sortie — décidé par la géométrie/les sorties).
@@ -509,14 +516,16 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     if (!safe) { lastPasser = o.id; lastPassT = curT; }   // une-deux (sauf passe de sécurité)
   }
 
-  function shoot(shooter) {
+  function shoot(shooter, isHeader) {
     const goal = oppGoal(shooter.side);
     const gk = team(otherSide(shooter.side)).find((p) => p.role === 'gk');
     const d = dist(shooter, goal);
     const base = d < 12 ? K.shootBase.near : d < 20 ? K.shootBase.mid : K.shootBase.far;
     const techMod = (shooter.technique - 55) / 100 * K.shootTechMod;
     const gkMod = ((gk ? gk.technique : 55) - 55) / 100 * K.shootGkMod;
-    const pGoal = Math.min(0.45, Math.max(0.02, base + techMod - gkMod));
+    // Tête : moins précise/puissante qu'un tir au pied, mais bonifiée par la force.
+    const headMod = isHeader ? -0.06 + (shooter.strength - 55) / 100 * 0.05 : 0;
+    const pGoal = Math.min(0.45, Math.max(0.02, base + techMod - gkMod + headMod));
     const r = rng.next();
     let outcome;
     if (r < pGoal) outcome = 'goal';
@@ -555,6 +564,34 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     flightIsShot = false;
   }
 
+  // DUEL AÉRIEN sur un centre qui retombe : le vainqueur se décide à la FORCE (+ proximité).
+  // Attaquant → tête au but (si à portée) ; défenseur → dégagement loin de son camp.
+  function resolveHeader() {
+    const contenders = all.filter((p) => p.role !== 'gk' && dist(p, ball) < 4.5);
+    if (!contenders.length) return false;            // personne → on laisse filer (réception/sortie normale)
+    let win = null, bs = -1e9;
+    for (const p of contenders) {
+      const prox = 4.5 - dist(p, ball);
+      const s = p.strength * 0.5 + prox * 4 + rng.range(0, 16);   // force + bien placé + aléa du duel
+      if (s > bs) { bs = s; win = p; }
+    }
+    inFlight = false; flightCross = false; ball.z = 0; ball.vz = 0; ball.vx = 0; ball.vy = 0;
+    if (win.side === flightSide && dist(win, oppGoal(win.side)) < 14) {
+      flashCause('Tête !', win.x, win.y);
+      ball.ownerId = null; shoot(win, true);          // tête cadrée/au but
+    } else if (win.side === flightSide) {
+      ball.ownerId = win.id; lastOwnerSide = win.side; possessionTime = 0;   // remise de la tête, on garde
+    } else {
+      // DÉGAGEMENT de la tête : renvoyé loin du but défendu (ballon aérien qui repart).
+      flashCause('Tête défensive', win.x, win.y);
+      const away = norm(win.x - ownGoal(win.side).x, win.y - ownGoal(win.side).y);
+      ball.vx = away.x * 22 + rng.range(-4, 4); ball.vy = away.y * 22 + rng.range(-4, 4);
+      ball.z = 0.4; ball.vz = G * 0.55; ball.ownerId = null; inFlight = true;
+      flightReceiverId = null; flightIsShot = false; flightSide = win.side;
+    }
+    return true;
+  }
+
   function makeDecision(o, press) {
     const goal = oppGoal(o.side); const tg = norm(goal.x - o.x, goal.y - o.y); const gd = dist(o, goal);
     let bestOpt = 'dribble', bestEV = -1e9, passMate = null, passThrough = false, passSafe = false;
@@ -574,12 +611,15 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       // Passe DÉCISIVE : servir un coéquipier en position de frappe (proche du but + dans l'axe).
       const mGd = dist(bp.mate, goal);
       const mAng = 1 - Math.min(1, Math.abs(bp.mate.y - GOAL_Y) / (mGd + 6));
-      const keyBonus = mGd < 20 ? (20 - mGd) * mAng * 0.32 : 0;
+      // PROFIL : un joueur TECHNIQUE tente davantage la passe décisive (créateur).
+      const creative = 1 + (o.technique - 55) / 100 * 1.1;
+      const keyBonus = (mGd < 20 ? (20 - mGd) * mAng * 0.32 : 0) * creative;
       const ev = prob * (1.5 + Math.max(0, adv) * 0.18 + cellValue(bp.mate, o.side) * 5 + keyBonus);
       if (ev > bestEV) { bestEV = ev; bestOpt = 'pass'; passMate = bp.mate; passThrough = bp.through; }
     }
+    // PROFIL : un joueur TECHNIQUE garde et élimine plus (dribble) ; un joueur limité joue plus simple.
     const aheadPt = clampPitch(o.x + tg.x * 9, o.y + tg.y * 9);
-    const dribbleEV = cellValue(aheadPt, o.side) * 3 * (1 - press);
+    const dribbleEV = cellValue(aheadPt, o.side) * 3 * (1 - press) * (1 + (o.technique - 55) / 100 * 1.0);
     if (dribbleEV > bestEV) { bestEV = dribbleEV; bestOpt = 'dribble'; }
     if (press > 0.55 && bestEV < 1.5) {
       let outlet = null, od = 1e9;
@@ -732,18 +772,21 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       if (inFlight) {
         ball.x += ball.vx * dt; ball.y += ball.vy * dt; ball.vx *= 0.985; ball.vy *= 0.985;
         if (ball.z > 0 || ball.vz !== 0) { ball.z += ball.vz * dt; ball.vz -= G * dt; if (ball.z <= 0) { ball.z = 0; ball.vz = 0; } }
+        // Centre qui RETOMBE (vz<0) dans le dernier tiers → duel aérien (têtes) avant toute réception.
+        let headed = false;
+        if (flightCross && !flightIsShot && ball.vz < 0 && ball.z < 1.9 && Math.abs(ball.x - oppGoal(flightSide).x) < 30) headed = resolveHeader();
         let rcv = null, rd = 1e9; for (const p of all) { const d = dist(p, ball); if (d < rd) { rd = d; rcv = p; } }
-        if (rcv && rd < 1.6 && ball.z < 1.8) {   // réception seulement quand le ballon est redescendu (centre franchit les défenseurs)
+        if (!headed && rcv && rd < 1.6 && ball.z < 1.8) {   // réception seulement quand le ballon est redescendu (centre franchit les défenseurs)
           if (flightIsShot) resolveShot();
           else {
             inFlight = false; ball.ownerId = rcv.id; ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0; possessionTime = 0;
             if (rcv.side === flightSide) st.passComp[flightSide]++;  // passe réussie (reçue par un coéquipier)
             lastOwnerSide = rcv.side;
           }
-        } else if (flightIsShot && (flightSide === 'home' ? ball.x >= PW - 0.5 : ball.x <= 0.5)) resolveShot();
-        if (phase === 'play' && (ball.y < 0 || ball.y > PH)) {
+        } else if (!headed && flightIsShot && (flightSide === 'home' ? ball.x >= PW - 0.5 : ball.x <= 0.5)) resolveShot();
+        if (!headed && phase === 'play' && (ball.y < 0 || ball.y > PH)) {
           awardThrowIn(otherSide(lastOwnerSide), ball.x, ball.y);   // touche
-        } else if (phase === 'play' && (ball.x < 0 || ball.x > PW)) {
+        } else if (!headed && phase === 'play' && (ball.x < 0 || ball.x > PW)) {
           const defGoalSide = ball.x < 0 ? 'home' : 'away';        // de quel but on sort
           if (lastOwnerSide === defGoalSide) awardCorner(otherSide(defGoalSide)); // défenseur l'a sortie → corner
           else awardGoalKick(defGoalSide);                          // attaquant l'a sortie → 6 mètres
