@@ -15,7 +15,7 @@ const K = {
   decideEvery: 0.7,           // s de possession avant décision
   shootMaxDist: 26,
   goalValue: 20,              // attractivité du tir dans l'EV (→ volume de tirs)
-  shootBase: { near: 0.185, mid: 0.108, far: 0.046 }, // <12 / <20 / sinon (conversion)
+  shootBase: { near: 0.205, mid: 0.122, far: 0.05 }, // <12 / <20 / sinon (conversion)
   shootTechMod: 0.11,
   shootGkMod: 0.08,
   outcomeSaved: 0.23,         // part après but
@@ -211,9 +211,10 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   }
   function giveBallToMidfield(side) {
     inFlight = false; flightIsShot = false;
-    const mid = team(side).find((p) => p.role === 'mid');
-    ball.ownerId = mid ? mid.id : null;
-    if (mid) { ball.x = mid.x; ball.y = mid.y; } else { ball.x = PW / 2; ball.y = GOAL_Y; }
+    // Donne au joueur le PLUS PROCHE du ballon (plus de téléportation à l'autre bout du terrain).
+    const near = team(side).reduce((b, p) => (dist(p, ball) < dist(b, ball) ? p : b));
+    ball.ownerId = near ? near.id : null;
+    if (near) { ball.x = near.x; ball.y = near.y; }
     ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0; lastOwnerSide = side; possessionTime = 0;
   }
 
@@ -239,16 +240,19 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     }
     spTaker = taker ? taker.id : null; spSide = side; spType = type;
     lastOwnerSide = side; possessionTime = 0;
-    phase = 'setpiece'; phaseUntil = curT + 0.8;
+    // Pause PROPORTIONNÉE : longue sur les remises à enjeu (corner / coup franc dangereux),
+    // courte sur les routinières (6 m, touche, coup franc au milieu) → on garde du temps de jeu.
+    // Le bandeau + l'anneau du tireur rendent même une pause brève lisible.
+    let pause = 1.7;
+    if (type === 'goalkick') pause = 1.0;
+    else if (type === 'throwin') pause = 1.2;
+    else if (type === 'freekick') { const att3 = side === 'home' ? x > HALF + 18 : x < HALF - 18; pause = att3 ? 1.7 : 1.0; }
+    phase = 'setpiece'; phaseUntil = curT + pause;
   }
-  function awardThrowIn(side, x, y) { st.throwins[side]++; deadBall(side, Math.min(Math.max(x, 1), PW - 1), y < HALF ? 0.4 : PH - 0.4, 'throwin'); }
-  function awardGoalKick(side) {   // 6 mètres = restart RAPIDE (peu d'enjeu visuel)
-    inFlight = false; flightIsShot = false;
+  function awardThrowIn(side, x, y) { st.throwins[side]++; deadBall(side, Math.min(Math.max(x, 1), PW - 1), y < PH / 2 ? 0.4 : PH - 0.4, 'throwin'); }
+  function awardGoalKick(side) {   // 6 mètres : remise en jeu VISIBLE comme les autres
     const x = side === 'home' ? 14 : PW - 14, y = GOAL_Y + rng.range(-12, 12);
-    ball.x = x; ball.y = y; ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0;
-    let taker = null, td = 1e9;
-    for (const p of team(side)) { if (p.role !== 'def' && p.role !== 'gk') continue; const d = Math.hypot(p.x - x, p.y - y); if (d < td) { td = d; taker = p; } }
-    ball.ownerId = taker ? taker.id : null; lastOwnerSide = side; possessionTime = 0;
+    deadBall(side, x, y, 'goalkick');
   }
   function takePenalty(side) {
     st.pens[side]++; st.shots[side]++; st.sot[side]++;
@@ -460,7 +464,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const beyond = o.side === 'home' ? mate.x > ctxOffside + 0.5 : mate.x < ctxOffside - 0.5;
     if (!noOff && inOppHalf && ahead && beyond) {
       st.offside[o.side]++;
-      giveBallToMidfield(otherSide(o.side));   // coup franc pour l'équipe qui défend
+      deadBall(otherSide(o.side), mate.x, mate.y, 'freekick');   // coup franc joué pour l'équipe qui défend
       return;
     }
     st.passAtt[o.side]++;
@@ -739,6 +743,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         ball: { x: ball.x, y: ball.y, z: ball.z },
         players: all.map((p) => ({ slot: p.slot, side: p.side, x: p.x, y: p.y, hasBall: ball.ownerId === p.id })),
         sh: scoreH, sa: scoreA,
+        sp: phase === 'setpiece' ? { x: spX, y: spY, slot: spTaker ? byId[spTaker].slot : -1, side: spSide, type: spType } : null,
       });
     }
   }

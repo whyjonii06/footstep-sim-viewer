@@ -156,6 +156,28 @@ function render() {
   ctx.beginPath(); ctx.arc(bx, drawY, br * (1 + Math.min(bz / 9, 0.5)), 0, 7);
   ctx.fillStyle = '#fff'; ctx.fill();
   ctx.lineWidth = 0.8; ctx.strokeStyle = '#000'; ctx.stroke();
+  // ── Remise en jeu (balle arrêtée) : anneau au point + anneau sur le tireur + bandeau ──
+  if (a.sp) {
+    const sp = a.sp;
+    const pulse = 1 + 0.22 * Math.sin(time * 6);
+    ctx.beginPath(); ctx.arc(wx(sp.x), wy(sp.y), pr * 1.5 * pulse, 0, 7);
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,215,0,0.85)'; ctx.stroke();
+    for (let n = 0; n < a.players.length && n < b.players.length; n++) {
+      const pa = a.players[n], pb = b.players[n];
+      if (pa.slot === sp.slot && pa.side === sp.side) {
+        const tx = wx(pa.x + (pb.x - pa.x) * k), ty = wy(pa.y + (pb.y - pa.y) * k);
+        ctx.beginPath(); ctx.arc(tx, ty, pr * 1.7, 0, 7);
+        ctx.lineWidth = 2.5; ctx.strokeStyle = '#FFD700'; ctx.stroke();
+        break;
+      }
+    }
+    const LAB = { throwin: 'Touche', freekick: 'Coup franc', corner: 'Corner', goalkick: 'Dégagement (6 m)' };
+    const label = (LAB[sp.type] || 'Remise en jeu') + (sp.slot >= 0 ? '  •  n°' + (JERSEY[sp.slot] ?? (sp.slot + 1)) : '');
+    ctx.font = 'bold 17px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.62)'; ctx.fillRect(W / 2 - tw / 2 - 14, 12, tw + 28, 30);
+    ctx.fillStyle = '#FFD700'; ctx.fillText(label, W / 2, 28);
+  }
   // score / minute
   document.getElementById('score').textContent = `${a.sh} – ${a.sa}`;
   document.getElementById('min').textContent = Math.min(90, Math.round(time/360*90)) + "'";
