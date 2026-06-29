@@ -15,14 +15,14 @@ const K = {
   decideEvery: 0.7,           // s de possession avant décision
   shootMaxDist: 26,
   goalValue: 20,              // attractivité du tir dans l'EV (→ volume de tirs)
-  shootBase: { near: 0.165, mid: 0.095, far: 0.04 }, // <12 / <20 / sinon (conversion)
+  shootBase: { near: 0.185, mid: 0.108, far: 0.046 }, // <12 / <20 / sinon (conversion)
   shootTechMod: 0.11,
   shootGkMod: 0.08,
   outcomeSaved: 0.23,         // part après but
   outcomeBlocked: 0.16,
   tackleBase: 0.12,
   tackleRange: 1.4,
-  foulShare: 0.56,            // part des tacles qui sont des fautes
+  foulShare: 0.62,            // part des tacles qui sont des fautes
   passMinProb: 0.22,
   passTechSlope: 0.85,        // pente technique→réussite passe (centrée sur 55)
   passLaneDiv: 6.2,           // + grand = couloir plus exigeant
@@ -139,6 +139,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   let ctxAtt = 'home', ctxPresser = null, ctxMark = {}, ctxInterceptor = null, ctxOffside = PW / 2;
   let ctxMent = { home: 0, away: 0 };   // mentalité selon score/temps (-1 défensif … +1 offensif)
   let gainT = { home: -9, away: -9 }, gainX = { home: HALF, away: HALF }, prevPossSide = 'home';
+  let lastPasser = null, lastPassT = -9;   // une-deux : le passeur plonge pour le retour
   // Mentalité effective = mentalité + bonus de CONTRE (récup basse récente → verticalité).
   const mentOf = (s) => {
     let m = ctxMent[s] || 0;
@@ -353,6 +354,11 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       if (th && td < 22) y = p.anchorY * 0.4 + th.y * 0.6;
       return clampPitch(x + jit.x, y + jit.y);
     }
+    // UNE-DEUX : le joueur qui vient de passer plonge vers l'avant pour le retour.
+    if (isAtt && p.id === lastPasser && curT - lastPassT < 1.4 && p.role !== 'gk') {
+      const fwd = dir > 0 ? Math.min(p.x + 12, ctxOffside + 1) : Math.max(p.x - 12, ctxOffside - 1);
+      return clampPitch(fwd + jit.x, p.y + jit.y);
+    }
     // ── JEU SANS BALLON (équipe en possession) : course en profondeur vs appel court ──
     if (isAtt && (p.role === 'att' || p.role === 'mid')) {
       const carrier = owner && owner.side === p.side ? owner : null;
@@ -469,6 +475,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const sp = Math.min(30, 9 + d * 0.8);
     ball.vx = Math.cos(ang) * sp; ball.vy = Math.sin(ang) * sp;
     ball.ownerId = null; inFlight = true; lastOwnerSide = o.side;
+    if (!safe) { lastPasser = o.id; lastPassT = curT; }   // une-deux (sauf passe de sécurité)
   }
 
   function shoot(shooter) {
@@ -663,13 +670,19 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
           ball.ownerId = taker.id; ball.x = taker.x; ball.y = taker.y;
           possessionTime = 0; lastOwnerSide = spSide; phase = 'play';
           if (spType === 'corner') {
-            // Pré-positionne 2 attaquants dans la surface et CENTRE direct vers le 1er
-            // (pas de hors-jeu sur corner) → reprise/tir réaliste, pas un tir du drapeau.
             const g = oppGoal(spSide);
-            const atts = team(spSide).filter((p) => (p.role === 'att' || p.role === 'mid') && p.id !== taker.id)
-              .sort((a, b) => dist(a, g) - dist(b, g)).slice(0, 2);
-            atts.forEach((p, k) => { p.x = g.x - attackDir(spSide) * 6; p.y = GOAL_Y + (k === 0 ? -5 : 5); });
-            if (atts[0]) doPass(taker, atts[0], false, false, true);   // centre, no offside
+            if (rng.bool(0.28)) {
+              // CORNER COURT : passe à un partenaire proche du drapeau → on construit.
+              const near = team(spSide).filter((q) => q.id !== taker.id && q.role !== 'gk')
+                .reduce((b, q) => (dist(q, taker) < dist(b, taker) ? q : b));
+              if (near) doPass(taker, near, false, true, true);
+            } else {
+              // CENTRE : 2 attaquants dans la surface + centre direct vers le 1er (pas de hors-jeu).
+              const atts = team(spSide).filter((p) => (p.role === 'att' || p.role === 'mid') && p.id !== taker.id)
+                .sort((a, b) => dist(a, g) - dist(b, g)).slice(0, 2);
+              atts.forEach((p, k) => { p.x = g.x - attackDir(spSide) * 6; p.y = GOAL_Y + (k === 0 ? -5 : 5); });
+              if (atts[0]) doPass(taker, atts[0], false, false, true);
+            }
           }
         } else phase = 'play';
       }
