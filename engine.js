@@ -14,24 +14,24 @@ const K = {
   controlTau: 1.4,
   decideEvery: 0.7,           // s de possession avant décision
   shootMaxDist: 26,
-  goalValue: 20,              // attractivité du tir dans l'EV (→ volume de tirs)
-  shootBase: { near: 0.205, mid: 0.122, far: 0.05 }, // <12 / <20 / sinon (conversion)
+  goalValue: 23,              // attractivité du tir dans l'EV (→ volume de tirs)
+  shootBase: { near: 0.25, mid: 0.152, far: 0.058 }, // <12 / <20 / sinon (conversion)
   shootTechMod: 0.11,
   shootGkMod: 0.08,
   outcomeSaved: 0.23,         // part après but
   outcomeBlocked: 0.16,
   tackleBase: 0.12,
   tackleRange: 1.4,
-  foulShare: 0.62,            // part des tacles qui sont des fautes
+  foulShare: 0.57,            // part des tacles qui sont des fautes
   passMinProb: 0.22,
   passTechSlope: 0.85,        // pente technique→réussite passe (centrée sur 55)
   passLaneDiv: 6.2,           // + grand = couloir plus exigeant
   speedSlope: 10,             // pente speed→vitesse (centrée sur 55)
   // ── Coups de pied arrêtés ──
-  yellowProb: 0.19,          // part des fautes → carton jaune
+  yellowProb: 0.16,          // part des fautes → carton jaune
   redGivenYellow: 0.04,
   penConv: 0.76,             // conversion penalty
-  penFromBoxFoul: 0.15,      // part des fautes dans la surface qui sont sifflées penalty
+  penFromBoxFoul: 0.11,      // part des fautes dans la surface qui sont sifflées penalty
   cornerFromBlock: 0.80,     // tir contré → corner
   cornerFromSave: 0.50,      // arrêt → corner (ballon relâché)
   cornerFromMiss: 0.33,      // tir manqué → corner (dévié)
@@ -403,6 +403,13 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         const runX = dir > 0 ? Math.min(ctxOffside, ball.x + 14) : Math.max(ctxOffside, ball.x - 14);
         return clampPitch(runX + jit.x, GOAL_Y + (p.anchorY - GOAL_Y) * 0.4 + jit.y);
       }
+      // AILIER (milieu de couloir, slot 5/8) : tient la LARGEUR sur sa touche et avance avec
+      // le jeu → il y a TOUJOURS un appui large pour sortir le ballon sur l'aile (puis centrer).
+      if (p.role === 'mid' && (p.slot === 5 || p.slot === 8) && (ball.x - HALF) * dir > -8) {
+        const wgy = p.anchorY < GOAL_Y ? 7 : PH - 7;
+        const wgx = dir > 0 ? Math.min(ball.x + 6, ctxOffside + 1) : Math.max(ball.x - 6, ctxOffside - 1);
+        return clampPitch(wgx + jit.x, wgy + jit.y);
+      }
       // autres milieux : soutien (bloc ci-dessous)
     }
 
@@ -446,6 +453,14 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const lateral = Math.abs(m.y - o.y);
       let score = (progress * 0.8 + space * 22 + own * 6 + openness * 1.6 + lateral * 0.25) * prob;
       if (m.role === 'att' && progress > 0) score += 8;
+      // PASSE DÉCISIVE : vers un coéquipier en position de frappe (proche + axe).
+      const mGd = dist(goal, m), mAng = 1 - Math.min(1, Math.abs(m.y - GOAL_Y) / (mGd + 6));
+      if (mGd < 22) score += (22 - mGd) * mAng * 0.9 * prob;
+      // JEU SUR L'AILE : changement vers un démarqué large, ou ailier dans le dernier tiers (→ centre).
+      const wide = Math.abs(m.y - GOAL_Y) > 17;
+      const finalThird = (m.x - HALF) * attackDir(o.side) > 16;
+      if (wide && openness > 7) score += 6 * prob;
+      if (wide && finalThird) score += 7 * prob;
       if (score > bestScore) { bestScore = score; best = m; bestThrough = progress > 12 && openness > 6; }
     }
     return best ? { mate: best, through: bestThrough } : null;
@@ -540,14 +555,21 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     if (gd < K.shootMaxDist) {
       const base = gd < 12 ? K.shootBase.near : gd < 20 ? K.shootBase.mid : K.shootBase.far;
       const pg = Math.max(0.02, base + (o.technique - 55) / 100 * K.shootTechMod);
-      const ev = pg * K.goalValue * (1 - press * 0.3) * (1 + mentOf(o.side) * 0.5);
+      // Angle de tir : un tir TRÈS excentré (près de la ligne de sortie) est mauvais → on préfère
+      // passer/centrer ; un tir légèrement décalé reste correct.
+      const angleQual = 1 - Math.min(0.55, Math.abs(o.y - GOAL_Y) / (gd + 14));
+      const ev = pg * K.goalValue * angleQual * (1 - press * 0.3) * (1 + mentOf(o.side) * 0.5);
       if (ev > bestEV) { bestEV = ev; bestOpt = 'shoot'; }
     }
     const bp = bestPassOption(o);
     if (bp) {
       const prob = passSuccess(o, bp.mate, o.technique, otherSide(o.side));
       const adv = gd - dist(bp.mate, goal);
-      const ev = prob * (1.5 + Math.max(0, adv) * 0.18 + cellValue(bp.mate, o.side) * 5);
+      // Passe DÉCISIVE : servir un coéquipier en position de frappe (proche du but + dans l'axe).
+      const mGd = dist(bp.mate, goal);
+      const mAng = 1 - Math.min(1, Math.abs(bp.mate.y - GOAL_Y) / (mGd + 6));
+      const keyBonus = mGd < 20 ? (20 - mGd) * mAng * 0.32 : 0;
+      const ev = prob * (1.5 + Math.max(0, adv) * 0.18 + cellValue(bp.mate, o.side) * 5 + keyBonus);
       if (ev > bestEV) { bestEV = ev; bestOpt = 'pass'; passMate = bp.mate; passThrough = bp.through; }
     }
     const aheadPt = clampPitch(o.x + tg.x * 9, o.y + tg.y * 9);
