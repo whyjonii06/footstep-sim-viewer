@@ -293,9 +293,17 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     if (p.role === 'gk') {
       const g = ownGoal(p.side);
       const ballInOwn = p.side === 'home' ? ball.x < HALF : ball.x > HALF;
-      const y = ballInOwn ? GOAL_Y + (ball.y - GOAL_Y) * 0.5 : GOAL_Y;
-      const comeOut = dist(ball, g) < 18 ? 6 : 2;
-      return { x: g.x + dir * comeOut, y: Math.min(Math.max(y, 28), 40) };
+      if (!ballInOwn) return { x: g.x + dir * 2, y: GOAL_Y };   // ballon loin → reste sur sa ligne, centré
+      const dBall = dist(ball, g);
+      // Sortie progressive selon la proximité du ballon, agressive en un-contre-un.
+      let comeOut = 2 + Math.max(0, (32 - dBall) / 32) * 7;
+      const owner = ball.ownerId ? byId[ball.ownerId] : null;
+      if (owner && owner.side !== p.side && dBall < 20) comeOut += 4;   // 1v1 → il sort
+      comeOut = Math.min(comeOut, 14);
+      // Placement sur la BISSECTRICE ballon→centre du but (ferme l'angle).
+      const a = norm(ball.x - g.x, ball.y - g.y);
+      const gy = Math.min(Math.max(g.y + a.y * comeOut, GOAL_Y - 10), GOAL_Y + 10);
+      return { x: g.x + a.x * comeOut, y: gy };
     }
     if (inFlight && !flightIsShot && (p.id === flightReceiverId || p.id === ctxInterceptor)) {
       return clampPitch(ball.x + ball.vx * 0.25, ball.y + ball.vy * 0.25);
@@ -320,10 +328,13 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const cap = (x) => (p.side === 'home' ? Math.min(x, capX) : Math.max(x, PW - capX));
       const lineDrop = 13 - ctxMent[p.side] * 9;   // mentalité : bétonne = recule, pousse = ligne haute
       let x = cap(isAtt ? HALF - 8 : ball.x - dir * lineDrop);
+      // LIGNE PLATE : x partagé (même hauteur pour les 4) ; on suit son secteur
+      // LATÉRALEMENT seulement (en y) → la ligne ne se casse pas. Le pressing/marquage
+      // serré, c'est le presseur et les marqueurs assignés qui s'en chargent (au-dessus).
       let y = p.anchorY;
       let th = null, td = 1e9;
       for (const o of opp(p.side)) { if (o.role !== 'att' && o.role !== 'mid') continue; const d = dist(o, p); if (d < td) { td = d; th = o; } }
-      if (th && td < 24) { y = p.anchorY * 0.45 + th.y * 0.55; x = cap((x + th.x - dir * 2) / 2); }
+      if (th && td < 22) y = p.anchorY * 0.4 + th.y * 0.6;
       return clampPitch(x + jit.x, y + jit.y);
     }
     // ── JEU SANS BALLON (équipe en possession) : course en profondeur vs appel court ──
