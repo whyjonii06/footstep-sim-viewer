@@ -548,11 +548,21 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     // → occasion immanquable, conversion très élevée.
     const beaten = gk ? (attackDir(shooter.side) * (shooter.x - gk.x) > 0.5) : true;
     if (beaten && d < 24) pGoal = Math.max(pGoal, isHeader ? 0.7 : 0.9);
+    // Un CONTRE n'est possible que si un DÉFENSEUR est réellement sur la trajectoire tir→but.
+    // Sinon (attaquant seul face au gardien), la part « contré » devient un ARRÊT du gardien.
+    let defInPath = false;
+    for (const p of opp(shooter.side)) {
+      if (p.role === 'gk') continue;
+      const seg = distSeg(p, shooter, goal);
+      if (seg.t > 0.03 && seg.t < 1 && seg.d < 2.2) { defInPath = true; break; }
+    }
+    const blockP = defInPath ? K.outcomeBlocked : 0;
+    const saveP = K.outcomeSaved + (defInPath ? 0 : K.outcomeBlocked);
     const r = rng.next();
     let outcome;
     if (r < pGoal) outcome = 'goal';
-    else if (r < pGoal + K.outcomeSaved) outcome = 'save';
-    else if (r < pGoal + K.outcomeSaved + K.outcomeBlocked) outcome = 'block';
+    else if (r < pGoal + saveP) outcome = 'save';
+    else if (r < pGoal + saveP + blockP) outcome = 'block';
     else outcome = 'miss';
     let aim = { x: goal.x, y: goal.y };
     if (outcome === 'miss') aim.y += rng.bool() ? GOAL_HW + 3 : -(GOAL_HW + 3);
