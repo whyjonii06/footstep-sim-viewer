@@ -557,7 +557,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       if (seg.t > 0.03 && seg.t < 1 && seg.d < 2.2) { defInPath = true; break; }
     }
     const blockP = defInPath ? K.outcomeBlocked : 0;
-    const saveP = K.outcomeSaved + (defInPath ? 0 : K.outcomeBlocked);
+    const saveP = K.outcomeSaved + (defInPath ? 0 : K.outcomeBlocked * 0.5);
     const r = rng.next();
     let outcome;
     if (r < pGoal) outcome = 'goal';
