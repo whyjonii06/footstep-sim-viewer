@@ -23,7 +23,7 @@ const K = {
   tackleBase: 0.12,
   tackleRange: 1.4,
   foulShare: 0.72,            // part des tacles qui sont des fautes
-  passMinProb: 0.22,
+  passMinProb: 0.30,
   passTechSlope: 0.85,        // pente technique→réussite passe (centrée sur 55)
   passLaneDiv: 6.2,           // + grand = couloir plus exigeant
   speedSlope: 10,             // pente speed→vitesse (centrée sur 55)
@@ -468,7 +468,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const goal = oppGoal(o.side); let best = null, bestScore = -1e18, bestThrough = false;
     for (const m of team(o.side)) {
       if (m.id === o.id || m.role === 'gk') continue;
-      const d = dist(o, m); if (d < 4 || d > 60) continue;
+      const d = dist(o, m); if (d < 4 || d > 48) continue;
       const prob = passSuccess(o, m, o.technique, otherSide(o.side));
       if (prob < K.passMinProb) continue;
       const progress = dist(goal, o) - dist(goal, m);
@@ -476,7 +476,9 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       const own = Math.max(0, controlAt(m.x, m.y) * sideSign(o.side));
       const openness = dist(nearestOpp(m.x, m.y, o.side), m);
       const lateral = Math.abs(m.y - o.y);
-      let score = (progress * 0.8 + space * 22 + own * 6 + openness * 1.6 + lateral * 0.25) * prob;
+      // CONSERVATION : la RÉUSSITE de la passe pèse fort (prob^1.5) → on évite les
+      // dégagements hasardeux vers l'avant ; le « vers l'avant » brut est moins récompensé.
+      let score = (progress * 0.6 + space * 22 + own * 6 + openness * 1.6 + lateral * 0.25) * Math.pow(prob, 1.5);
       if (m.role === 'att' && progress > 0) score += 8;
       // PASSE DÉCISIVE : vers un coéquipier en position de frappe (proche + axe).
       const mGd = dist(goal, m), mAng = 1 - Math.min(1, Math.abs(m.y - GOAL_Y) / (mGd + 6));
@@ -832,12 +834,24 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         let headed = false;
         if (flightCross && !flightIsShot && ball.vz < 0 && ball.z < 1.9 && Math.abs(ball.x - oppGoal(flightSide).x) < 30) headed = resolveHeader();
         if (!headed && flightIsShot) {
-          // LE TIR VOLE jusqu'au but (on le VOIT arriver sur la cage / le gardien). Seul un
-          // DÉFENSEUR sur la trajectoire peut le contrer en chemin — jamais le tireur/un partenaire.
+          // LE TIR VA AU BOUT de sa course avant de se résoudre (on VOIT le ballon finir) :
+          //  • raté → sort franchement du cadre  • but → franchit la ligne
+          //  • arrêt → atteint le gardien  • contré → un défenseur l'intercepte en chemin.
           const g = oppGoal(flightSide);
-          const reachedGoal = attackDir(flightSide) * (ball.x - g.x) > -1.5;
-          let ddef = 1e9; for (const p of opp(flightSide)) { if (p.role === 'gk') continue; const d = dist(p, ball); if (d < ddef) ddef = d; }
-          if (reachedGoal || (flightOutcome === 'block' && ddef < 1.6)) resolveShot();
+          const past = attackDir(flightSide) * (ball.x - g.x);   // <0 avant la ligne, >0 au-delà
+          const gkOf = opp(flightSide).find((p) => p.role === 'gk');
+          let done;
+          if (flightOutcome === 'block') {
+            let ddef = 1e9; for (const p of opp(flightSide)) { if (p.role === 'gk') continue; const d = dist(p, ball); if (d < ddef) ddef = d; }
+            done = ddef < 1.6 || past > 0;
+          } else if (flightOutcome === 'save') {
+            done = (gkOf && dist(ball, gkOf) < 1.8) || past > -0.3;
+          } else if (flightOutcome === 'miss') {
+            done = past > 2.5;                                   // laisse le ballon SORTIR du cadre
+          } else {
+            done = past > -0.3;                                  // but : au niveau de la ligne
+          }
+          if (done) resolveShot();
         } else if (!headed) {
           let rcv = null, rd = 1e9; for (const p of all) { const d = dist(p, ball); if (d < rd) { rd = d; rcv = p; } }
           if (rcv && rd < 1.6 && ball.z < 1.8) {   // réception (passe/centre) quand le ballon est redescendu
