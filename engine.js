@@ -22,7 +22,7 @@ const K = {
   outcomeBlocked: 0.16,
   tackleBase: 0.12,
   tackleRange: 1.4,
-  foulShare: 0.57,            // part des tacles qui sont des fautes
+  foulShare: 0.72,            // part des tacles qui sont des fautes
   passMinProb: 0.22,
   passTechSlope: 0.85,        // pente technique→réussite passe (centrée sur 55)
   passLaneDiv: 6.2,           // + grand = couloir plus exigeant
@@ -398,7 +398,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         let bestY = center, bs = -1e9;
         for (const d of [-spread, -spread / 2, 0, spread / 2, spread]) {
           const yy = Math.min(Math.max(center + d, 6), PH - 6);
-          const s = openAt(xx, yy) - Math.abs(yy - p.anchorY) * 0.012;
+          const s = openAt(xx, yy) - Math.abs(yy - p.anchorY) * 0.03;
           if (s > bs) { bs = s; bestY = yy; }
         }
         return bestY;
@@ -448,7 +448,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     } else if (p.role === 'mid') {
       homeX = bx + dir * (isAtt ? 3 : -3);
     } else homeX = bx;
-    const homeY = p.anchorY * 0.78 + ball.y * 0.22;
+    const homeY = p.anchorY * 0.86 + ball.y * 0.14;   // tient son COULOIR (moins d'attraction centrale)
     const rh = clampPitch(homeX, homeY);
     let bestCell = rh, bestScore = -1e18;
     for (let j = 0; j < GY; j++) for (let i = 0; i < GX; i++) {
@@ -461,7 +461,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
       else { const theirCtrl = Math.max(0, Math.min(1, -ctrlOwn / 3)); s = cellValue(c, otherSide(p.side)) * (0.4 + 0.6 * theirCtrl) * reach * 100; }
       if (s > bestScore) { bestScore = s; bestCell = c; }
     }
-    return clampPitch(rh.x * 0.6 + bestCell.x * 0.4 + jit.x, rh.y * 0.6 + bestCell.y * 0.4 + jit.y);
+    return clampPitch(rh.x * 0.6 + bestCell.x * 0.4 + jit.x, rh.y * 0.8 + bestCell.y * 0.2 + jit.y);
   }
 
   function bestPassOption(o) {
@@ -517,9 +517,9 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     // aggravée par la pression et la faible technique. Une passe ratée part à la dérive
     // (interception, ballon qui traîne, ou sortie — décidé par la géométrie/les sorties).
     const press = pressureOn(o);
-    const errMag = (success ? 0.05 : 0.22) + (1 - o.technique / 100) * 0.12 + press * 0.05;
+    const errMag = (success ? 0.05 : 0.17) + (1 - o.technique / 100) * 0.12 + press * 0.05;
     const ang = Math.atan2(ft.y - o.y, ft.x - o.x) + (rng.next() - 0.5) * 2 * errMag;
-    const weight = success ? rng.range(0.96, 1.06) : rng.range(0.70, 1.35);
+    const weight = success ? rng.range(0.96, 1.06) : rng.range(0.78, 1.18);   // ratées moins folles → moins de sorties
     const d = dist(o, ft) * weight;
     const sp = isCross ? Math.min(20, 7 + d * 0.45) : Math.min(30, 9 + d * 0.8);   // centre = plus lent
     ball.vx = Math.cos(ang) * sp; ball.vy = Math.sin(ang) * sp;
@@ -680,6 +680,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   }
 
   function attemptTackle(d, c) {
+    if (curT < restartFreeUntil) return;   // répit après une remise en jeu → pas de faute en chaîne
     // Duel : force du défenseur vs (technique+force) du porteur (protection de balle). Centré sur 55.
     const carrierHold = c.technique * 0.6 + c.strength * 0.4;
     const pT = Math.min(0.5, K.tackleBase + (d.strength - carrierHold) / 130 + 0.1);
@@ -719,6 +720,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   ball = { x: center.x, y: center.y, vx: 0, vy: 0, ownerId: null };
   phase = 'kickoff'; kickoffSide = 'home'; phaseUntil = 1.2; lastOwnerSide = 'home';
   let halftimeDone = false;
+  let restartFreeUntil = -9;   // fenêtre sans tacle après une remise en jeu jouée (anti-fautes en chaîne)
   let curT = 0;
 
   for (let tick = 0; tick <= totalTicks + extraTicks; tick++) {
@@ -764,7 +766,16 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     for (const p of all) {
       let tgt;
       if (phase === 'play') tgt = targetFor(p);
-      else if (phase === 'setpiece') tgt = (p.id === spTaker) ? { x: spX, y: spY } : targetFor(p);
+      else if (phase === 'setpiece') {
+        if (p.id === spTaker) tgt = { x: spX, y: spY };
+        else if (p.side !== spSide && (spType === 'freekick' || spType === 'throwin')) {
+          // Les adversaires s'écartent du point (règle des 9,15 m) → le tireur joue tranquille.
+          const rr = spType === 'freekick' ? 9.5 : 5;
+          const dd = Math.hypot(p.x - spX, p.y - spY);
+          if (dd < rr) { const n = norm(p.x - spX, p.y - spY); tgt = { x: spX + n.x * rr, y: spY + n.y * rr }; }
+          else tgt = targetFor(p);
+        } else tgt = targetFor(p);
+      }
       else tgt = kickoffTarget(p);
       const des = clampLen(tgt.x - p.x, tgt.y - p.y, effSpeed(p));
       let sx = 0, sy = 0;
@@ -794,6 +805,7 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         if (taker) {
           ball.ownerId = taker.id; ball.x = taker.x; ball.y = taker.y;
           possessionTime = 0; lastOwnerSide = spSide; phase = 'play';
+          if (spType === 'freekick') restartFreeUntil = curT + 1.3;   // court répit sans tacle → pas de faute immédiate en retour
           if (spType === 'corner') {
             const g = oppGoal(spSide);
             if (rng.bool(0.28)) {
@@ -819,16 +831,22 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
         // Centre qui RETOMBE (vz<0) dans le dernier tiers → duel aérien (têtes) avant toute réception.
         let headed = false;
         if (flightCross && !flightIsShot && ball.vz < 0 && ball.z < 1.9 && Math.abs(ball.x - oppGoal(flightSide).x) < 30) headed = resolveHeader();
-        let rcv = null, rd = 1e9; for (const p of all) { const d = dist(p, ball); if (d < rd) { rd = d; rcv = p; } }
-        if (!headed && rcv && rd < 1.6 && ball.z < 1.8) {   // réception seulement quand le ballon est redescendu (centre franchit les défenseurs)
-          if (flightIsShot) resolveShot();
-          else {
+        if (!headed && flightIsShot) {
+          // LE TIR VOLE jusqu'au but (on le VOIT arriver sur la cage / le gardien). Seul un
+          // DÉFENSEUR sur la trajectoire peut le contrer en chemin — jamais le tireur/un partenaire.
+          const g = oppGoal(flightSide);
+          const reachedGoal = attackDir(flightSide) * (ball.x - g.x) > -1.5;
+          let ddef = 1e9; for (const p of opp(flightSide)) { if (p.role === 'gk') continue; const d = dist(p, ball); if (d < ddef) ddef = d; }
+          if (reachedGoal || (flightOutcome === 'block' && ddef < 1.6)) resolveShot();
+        } else if (!headed) {
+          let rcv = null, rd = 1e9; for (const p of all) { const d = dist(p, ball); if (d < rd) { rd = d; rcv = p; } }
+          if (rcv && rd < 1.6 && ball.z < 1.8) {   // réception (passe/centre) quand le ballon est redescendu
             inFlight = false; ball.ownerId = rcv.id; ball.vx = 0; ball.vy = 0; ball.z = 0; ball.vz = 0; possessionTime = 0;
             if (rcv.side === flightSide) st.passComp[flightSide]++;  // passe réussie (reçue par un coéquipier)
             lastOwnerSide = rcv.side;
           }
-        } else if (!headed && flightIsShot && (flightSide === 'home' ? ball.x >= PW - 0.5 : ball.x <= 0.5)) resolveShot();
-        if (!headed && phase === 'play' && (ball.y < 0 || ball.y > PH)) {
+        }
+        if (!headed && !flightIsShot && phase === 'play' && (ball.y < 0 || ball.y > PH)) {
           awardThrowIn(otherSide(lastOwnerSide), ball.x, ball.y);   // touche
         } else if (!headed && phase === 'play' && (ball.x < 0 || ball.x > PW)) {
           const defGoalSide = ball.x < 0 ? 'home' : 'away';        // de quel but on sort

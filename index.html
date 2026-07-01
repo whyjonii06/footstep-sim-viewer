@@ -180,9 +180,12 @@ function render() {
   }
   // ── CAUSE de l'arrêt de jeu (Faute / Arrêt / Contré / Hors-jeu…) affichée à l'endroit de l'action ──
   if (a.cause) {
-    const cx = wx(a.cause.x), cy = Math.max(22, wy(a.cause.y) - 18);
     ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const tw = ctx.measureText(a.cause.txt).width;
+    const half = tw / 2 + 9;
+    // Clampe le bandeau pour qu'il reste ENTIÈREMENT visible (jamais coupé aux bords).
+    const cx = Math.min(Math.max(wx(a.cause.x), half), W - half);
+    const cy = Math.min(Math.max(wy(a.cause.y) - 18, 22), H - 14);
     ctx.fillStyle = 'rgba(220,38,38,0.9)'; ctx.fillRect(cx - tw / 2 - 9, cy - 13, tw + 18, 24);
     ctx.fillStyle = '#fff'; ctx.fillText(a.cause.txt, cx, cy);
   }
