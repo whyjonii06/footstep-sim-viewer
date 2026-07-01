@@ -621,14 +621,19 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const keeperBeaten = gkk && attackDir(o.side) * (o.x - gkk.x) > 0.5;
     if (gd < 12 || (keeperBeaten && gd < 24)) {
       const finishQ = (p) => (24 - Math.min(24, dist(p, goal))) + (1 - Math.min(1, Math.abs(p.y - GOAL_Y) / (dist(p, goal) + 6))) * 10;
-      const myQ = finishQ(o);
-      // 2 CONTRE 1 : servir un coéquipier NETTEMENT mieux placé et démarqué (tap-in assuré).
-      let sq = null, sqQ = 0;
+      const foesAround = (p) => opp(o.side).filter((f) => f.role !== 'gk' && dist(f, p) < 6).length;   // adversaires collés
+      const myQ = finishQ(o), myFoes = foesAround(o);
+      // 2 CONTRE 1 : servir le coéquipier le PLUS DÉMARQUÉ (le moins d'adversaires autour),
+      // à condition qu'il soit en position de frappe correcte (pas reculer le jeu).
+      let sq = null, sqScore = -1e9;
       for (const m of team(o.side)) {
         if (m.id === o.id || m.role === 'gk' || dist(m, goal) > 20) continue;
         if (passSuccess(o, m, o.technique, otherSide(o.side)) < 0.5) continue;
-        const q = finishQ(m) + dist(nearestOpp(m.x, m.y, o.side), m);   // + s'il est seul
-        if (q > myQ + 6 && q > sqQ) { sqQ = q; sq = m; }
+        if (finishQ(m) < myQ - 4) continue;                       // doit rester une bonne position de tir
+        const mFoes = foesAround(m);
+        if (mFoes >= myFoes) continue;                            // uniquement s'il est PLUS démarqué que moi
+        const score = (myFoes - mFoes) * 10 + finishQ(m);         // priorité : nb d'adversaires autour
+        if (score > sqScore) { sqScore = score; sq = m; }
       }
       if (sq) { doPass(o, sq, false, false); return; }
       shoot(o); return;
