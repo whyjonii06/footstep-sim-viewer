@@ -25,7 +25,7 @@
   <span id="min">0'</span>
   <span class="name" id="an">Extérieur</span>
   <span style="flex:1"></span>
-  <button id="cam">📷 Suivi</button>
+  <button id="cam">🔍 Vue ballon</button>
   <button id="pause">Pause</button>
   <button id="regen">↻ Nouveau match</button>
   <label style="font-size:13px;color:#9CA3AF">vitesse <input id="speed" type="range" min="0.5" max="4" step="0.5" value="1.5"></label>
@@ -60,7 +60,7 @@ const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height;
 
 // Caméra : en mode "suivi", on montre une fenêtre zoomée centrée sur le ballon.
-let follow = true;
+let follow = false;   // défaut : vue terrain dézoomée (préférence utilisateur)
 let camCX = PW / 2, camCY = PH / 2;
 const FVW = 58, FVH = FVW * H / W;          // fenêtre de suivi (m) au ratio du canvas
 function vw() { return follow ? FVW : PW; }
@@ -191,7 +191,7 @@ function render() {
   document.getElementById('min').textContent = Math.min(90, Math.round(time/360*90)) + "'";
 }
 
-document.getElementById('cam').onclick = (e) => { follow = !follow; e.target.textContent = follow ? '📷 Suivi' : '🗺️ Terrain'; };
+document.getElementById('cam').onclick = (e) => { follow = !follow; e.target.textContent = follow ? '🗺️ Vue terrain' : '🔍 Vue ballon'; };
 document.getElementById('regen').onclick = () => { seed++; generate(); paused = false; document.getElementById('pause').textContent = 'Pause'; };
 document.getElementById('pause').onclick = (e) => {
   paused = !paused;

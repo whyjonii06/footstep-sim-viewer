@@ -355,6 +355,22 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
           return clampPitch(ox + jit.x, p.anchorY + jit.y);
         }
       }
+      // COUVERTURE : en défense, le central le plus proche du DERNIER attaquant décroche
+      // goal-side pour couper les courses solo en profondeur (anti « file tout droit au but »).
+      if (!isAtt && isCB) {
+        const og = ownGoal(p.side);
+        const deepest = opp(p.side)
+          .filter((o) => o.role === 'att' || o.role === 'mid')
+          .reduce((b, o) => (!b || dist(o, og) < dist(b, og) ? o : b), null);
+        if (deepest && dist(deepest, og) < 42) {
+          const cbs = team(p.side).filter((q) => q.slot === 2 || q.slot === 3);
+          const closest = cbs.reduce((b, q) => (dist(q, deepest) < dist(b, deepest) ? q : b));
+          if (closest.id === p.id) {
+            const gs = norm(og.x - deepest.x, og.y - deepest.y);   // vers notre but
+            return clampPitch(capOwnHalf(deepest.x + gs.x * 4, p.side) + jit.x * 0.3, deepest.y + gs.y * 4 + jit.y * 0.3);
+          }
+        }
+      }
       const lineDrop = 13 - mentOf(p.side) * 9;   // mentalité : bétonne = recule, pousse = ligne haute
       let x = cap(isAtt ? HALF - 8 : ball.x - dir * lineDrop);
       // LIGNE PLATE : x partagé (même hauteur pour les 4) ; on suit son secteur
@@ -525,7 +541,11 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
     const gkMod = ((gk ? gk.technique : 55) - 55) / 100 * K.shootGkMod;
     // Tête : moins précise/puissante qu'un tir au pied, mais bonifiée par la force.
     const headMod = isHeader ? -0.06 + (shooter.strength - 55) / 100 * 0.05 : 0;
-    const pGoal = Math.min(0.45, Math.max(0.02, base + techMod - gkMod + headMod));
+    let pGoal = Math.min(0.45, Math.max(0.02, base + techMod - gkMod + headMod));
+    // GARDIEN BATTU / cage quasi vide : le tireur est passé côté but par rapport au gardien
+    // → occasion immanquable, conversion très élevée.
+    const beaten = gk ? (attackDir(shooter.side) * (shooter.x - gk.x) > 0.5) : true;
+    if (beaten && d < 24) pGoal = Math.max(pGoal, isHeader ? 0.7 : 0.9);
     const r = rng.next();
     let outcome;
     if (r < pGoal) outcome = 'goal';
@@ -595,6 +615,25 @@ function simulate(homeTeam, awayTeam, seed, displaySeconds = 360, opts = {}) {
   function makeDecision(o, press) {
     const goal = oppGoal(o.side); const tg = norm(goal.x - o.x, goal.y - o.y); const gd = dist(o, goal);
     let bestOpt = 'dribble', bestEV = -1e9, passMate = null, passThrough = false, passSafe = false;
+
+    // ── FINITION : dans la surface ou gardien battu → on CONCLUT (jamais dribbler dans la cage). ──
+    const gkk = team(otherSide(o.side)).find((p) => p.role === 'gk');
+    const keeperBeaten = gkk && attackDir(o.side) * (o.x - gkk.x) > 0.5;
+    if (gd < 12 || (keeperBeaten && gd < 24)) {
+      const finishQ = (p) => (24 - Math.min(24, dist(p, goal))) + (1 - Math.min(1, Math.abs(p.y - GOAL_Y) / (dist(p, goal) + 6))) * 10;
+      const myQ = finishQ(o);
+      // 2 CONTRE 1 : servir un coéquipier NETTEMENT mieux placé et démarqué (tap-in assuré).
+      let sq = null, sqQ = 0;
+      for (const m of team(o.side)) {
+        if (m.id === o.id || m.role === 'gk' || dist(m, goal) > 20) continue;
+        if (passSuccess(o, m, o.technique, otherSide(o.side)) < 0.5) continue;
+        const q = finishQ(m) + dist(nearestOpp(m.x, m.y, o.side), m);   // + s'il est seul
+        if (q > myQ + 6 && q > sqQ) { sqQ = q; sq = m; }
+      }
+      if (sq) { doPass(o, sq, false, false); return; }
+      shoot(o); return;
+    }
+
     if (gd < K.shootMaxDist) {
       const base = gd < 12 ? K.shootBase.near : gd < 20 ? K.shootBase.mid : K.shootBase.far;
       const pg = Math.max(0.02, base + (o.technique - 55) / 100 * K.shootTechMod);
